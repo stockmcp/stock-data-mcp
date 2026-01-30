@@ -1,0 +1,26 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Local / AI tools
+.claude/
+CLAUDE.md
+.idea
+.cache
+
+# uv / lock
+uv.lock
+
+.DS_Store
+output.txt
+Thumbs.db
+
+# Logs
+*.log

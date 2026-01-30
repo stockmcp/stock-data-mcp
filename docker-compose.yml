@@ -1,0 +1,11 @@
+services:
+  stock-data-mcp:
+    container_name: stock-data-mcp
+    image: ghcr.io/stockmcp/stock-data-mcp
+    ports:
+      - 8808:80
+    environment:
+      TZ: Asia/Shanghai
+      TRANSPORT: ${TRANSPORT:-http} # http/sse
+      UV_INDEX_URL: https://mirrors.ustc.edu.cn/pypi/simple
+    restart: always

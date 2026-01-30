@@ -1,0 +1,24 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.stockmcp/stock-data-mcp",
+  "title": "Stock Data MCP Server",
+  "description": "MCP Server for stock and crypto",
+  "repository": {
+    "url": "https://github.com/stockmcp/stock-data-mcp",
+    "source": "github"
+  },
+  "version": "0.2.0",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "stock-data-mcp",
+      "version": "0.2.0",
+      "transport": {"type": "stdio"}
+    },
+    {
+      "registryType": "oci",
+      "identifier": "ghcr.io/stockmcp/stock-data-mcp:latest",
+      "transport": {"type": "stdio"}
+    }
+  ]
+}

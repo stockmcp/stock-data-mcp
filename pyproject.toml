@@ -1,0 +1,30 @@
+[project]
+name = "stock-data-mcp"
+version = "0.2.0"
+description = "MCP Server for stock and crypto with multi-source failover"
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = ["stock", "trading", "mcp", "llm", "multi-source", "akshare", "efinance", "tushare"]
+license = { text = "MIT" }
+dependencies = [
+    "akshare>=1.17.0",
+    "efinance>=0.5.0",
+    "baostock>=0.8.8",
+    "yfinance>=0.2.0",
+    "tushare>=1.4.0",
+    "tenacity>=8.0.0",
+    "cachetools>=6.2.0",
+    "diskcache>=5.6.0",
+    "fastmcp>=2.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/stockmcp/stock-data-mcp"
+Repository = "https://github.com/stockmcp/stock-data-mcp.git"
+
+[project.scripts]
+stock-data-mcp = "stock_data_mcp:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
