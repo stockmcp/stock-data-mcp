@@ -19,6 +19,9 @@ from .types import (
     get_daily_circuit_breaker,
     get_realtime_circuit_breaker,
     get_chip_circuit_breaker,
+    get_fund_flow_circuit_breaker,
+    get_board_circuit_breaker,
+    get_billboard_circuit_breaker,
 )
 
 if TYPE_CHECKING:
@@ -191,6 +194,22 @@ class BaseFetcher(ABC):
 
     def get_chip_distribution(self, stock_code: str) -> Optional[ChipDistribution]:
         """获取筹码分布（子类可覆盖）"""
+        return None
+
+    def get_fund_flow(self, stock_code: str) -> Optional[pd.DataFrame]:
+        """获取资金流向（子类可覆盖）"""
+        return None
+
+    def get_belong_board(self, stock_code: str) -> Optional[pd.DataFrame]:
+        """获取所属板块（子类可覆盖）"""
+        return None
+
+    def get_board_cons(self, board_name: str, board_type: str = "industry") -> Optional[pd.DataFrame]:
+        """获取板块成分股（子类可覆盖）"""
+        return None
+
+    def get_billboard(self, days: str = "5") -> Optional[pd.DataFrame]:
+        """获取龙虎榜统计（子类可覆盖）"""
         return None
 
 
@@ -412,4 +431,144 @@ class DataFetcherManager:
             'daily_circuit_breaker': get_daily_circuit_breaker().get_status(),
             'realtime_circuit_breaker': get_realtime_circuit_breaker().get_status(),
             'chip_circuit_breaker': get_chip_circuit_breaker().get_status(),
+            'fund_flow_circuit_breaker': get_fund_flow_circuit_breaker().get_status(),
+            'board_circuit_breaker': get_board_circuit_breaker().get_status(),
+            'billboard_circuit_breaker': get_billboard_circuit_breaker().get_status(),
         }
+
+    def get_fund_flow(self, stock_code: str) -> Optional[pd.DataFrame]:
+        """
+        获取资金流向，自动故障转移
+
+        Args:
+            stock_code: 股票代码
+
+        Returns:
+            DataFrame 或 None，包含 source 属性标记来源
+        """
+        circuit_breaker = get_fund_flow_circuit_breaker()
+
+        for fetcher in self._fetchers:
+            source_name = fetcher.name
+
+            if not circuit_breaker.is_available(source_name):
+                _LOGGER.debug(f"[{source_name}] 熔断中，跳过资金流向")
+                continue
+
+            try:
+                df = fetcher.get_fund_flow(stock_code)
+                if df is not None and not df.empty:
+                    circuit_breaker.record_success(source_name)
+                    df.attrs['source'] = source_name
+                    _LOGGER.debug(f"[{source_name}] 成功获取 {stock_code} 资金流向")
+                    return df
+            except Exception as e:
+                circuit_breaker.record_failure(source_name, str(e))
+                _LOGGER.warning(f"[{source_name}] 获取 {stock_code} 资金流向失败: {e}")
+                continue
+
+        _LOGGER.error(f"所有数据源均无法获取 {stock_code} 资金流向")
+        return None
+
+    def get_belong_board(self, stock_code: str) -> Optional[pd.DataFrame]:
+        """
+        获取所属板块，自动故障转移
+
+        Args:
+            stock_code: 股票代码
+
+        Returns:
+            DataFrame 或 None，包含 source 属性标记来源
+        """
+        circuit_breaker = get_board_circuit_breaker()
+
+        for fetcher in self._fetchers:
+            source_name = fetcher.name
+
+            if not circuit_breaker.is_available(source_name):
+                _LOGGER.debug(f"[{source_name}] 熔断中，跳过所属板块")
+                continue
+
+            try:
+                df = fetcher.get_belong_board(stock_code)
+                if df is not None and not df.empty:
+                    circuit_breaker.record_success(source_name)
+                    df.attrs['source'] = source_name
+                    _LOGGER.debug(f"[{source_name}] 成功获取 {stock_code} 所属板块")
+                    return df
+            except Exception as e:
+                circuit_breaker.record_failure(source_name, str(e))
+                _LOGGER.warning(f"[{source_name}] 获取 {stock_code} 所属板块失败: {e}")
+                continue
+
+        _LOGGER.error(f"所有数据源均无法获取 {stock_code} 所属板块")
+        return None
+
+    def get_board_cons(self, board_name: str, board_type: str = "industry") -> Optional[pd.DataFrame]:
+        """
+        获取板块成分股，自动故障转移
+
+        Args:
+            board_name: 板块名称
+            board_type: 板块类型 industry/concept
+
+        Returns:
+            DataFrame 或 None，包含 source 属性标记来源
+        """
+        circuit_breaker = get_board_circuit_breaker()
+
+        for fetcher in self._fetchers:
+            source_name = fetcher.name
+
+            if not circuit_breaker.is_available(source_name):
+                _LOGGER.debug(f"[{source_name}] 熔断中，跳过板块成分股")
+                continue
+
+            try:
+                df = fetcher.get_board_cons(board_name, board_type)
+                if df is not None and not df.empty:
+                    circuit_breaker.record_success(source_name)
+                    df.attrs['source'] = source_name
+                    _LOGGER.debug(f"[{source_name}] 成功获取 {board_name} 成分股")
+                    return df
+            except Exception as e:
+                circuit_breaker.record_failure(source_name, str(e))
+                _LOGGER.warning(f"[{source_name}] 获取 {board_name} 成分股失败: {e}")
+                continue
+
+        _LOGGER.error(f"所有数据源均无法获取 {board_name} 成分股")
+        return None
+
+    def get_billboard(self, days: str = "5") -> Optional[pd.DataFrame]:
+        """
+        获取龙虎榜统计，自动故障转移
+
+        Args:
+            days: 统计天数 (5/10/30/60)
+
+        Returns:
+            DataFrame 或 None，包含 source 属性标记来源
+        """
+        circuit_breaker = get_billboard_circuit_breaker()
+
+        for fetcher in self._fetchers:
+            source_name = fetcher.name
+
+            if not circuit_breaker.is_available(source_name):
+                _LOGGER.debug(f"[{source_name}] 熔断中，跳过龙虎榜")
+                continue
+
+            try:
+                df = fetcher.get_billboard(days)
+                if df is not None and not df.empty:
+                    circuit_breaker.record_success(source_name)
+                    df.attrs['source'] = source_name
+                    _LOGGER.debug(f"[{source_name}] 成功获取龙虎榜数据")
+                    return df
+            except Exception as e:
+                circuit_breaker.record_failure(source_name, str(e))
+                _LOGGER.warning(f"[{source_name}] 获取龙虎榜失败: {e}")
+                continue
+
+        _LOGGER.error(f"所有数据源均无法获取龙虎榜数据")
+        return None

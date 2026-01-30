@@ -3,6 +3,7 @@ import time
 import json
 import logging
 import akshare as ak
+import efinance as ef
 import argparse
 import requests
 import pandas as pd
@@ -14,7 +15,6 @@ from .cache import CacheKey
 from .data_provider import (
     DataFetcherManager,
     to_chinese_columns,
-    COLUMN_MAPPING_TO_CN,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -24,6 +24,12 @@ mcp = FastMCP(name="stock-data-mcp", version="0.2.0")
 
 # 全局数据获取管理器（支持多数据源自动故障转移）
 _data_manager = None
+
+# 技术指标列定义（复用于股票和加密货币K线输出）
+MA_COLUMNS = ["MA5", "MA10", "MA20", "MA30", "MA60"]
+INDICATOR_COLUMNS = ["MACD", "DIF", "DEA", "KDJ.K", "KDJ.D", "KDJ.J", "RSI6", "RSI", "RSI24", "BOLL.U", "BOLL.M", "BOLL.L", "OBV", "ATR"]
+STOCK_PRICE_COLUMNS = ["日期", "开盘", "收盘", "最高", "最低", "成交量", "换手率"] + MA_COLUMNS + INDICATOR_COLUMNS
+CRYPTO_PRICE_COLUMNS = ["时间", "开盘", "收盘", "最高", "最低", "成交量", "成交额"] + MA_COLUMNS + INDICATOR_COLUMNS
 
 def get_data_manager() -> DataFetcherManager:
     """获取全局数据管理器（延迟初始化）"""
@@ -38,6 +44,26 @@ field_market = Field("sh", description="股票市场，仅支持: sh(上证), sz
 OKX_BASE_URL = os.getenv("OKX_BASE_URL") or "https://www.okx.com"
 BINANCE_BASE_URL = os.getenv("BINANCE_BASE_URL") or "https://www.binance.com"
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10) AppleWebKit/537.36 Chrome/139"
+
+
+def _http_get_with_retry(url, params=None, headers=None, max_retries=3, timeout=20):
+    """带重试的 HTTP GET 请求"""
+    if headers is None:
+        headers = {"User-Agent": USER_AGENT}
+    last_error = None
+    for i in range(max_retries):
+        try:
+            res = requests.get(url, params=params, headers=headers, timeout=timeout)
+            if res.status_code == 200:
+                return res
+        except Exception as e:
+            last_error = e
+            _LOGGER.warning(f"HTTP GET 第{i+1}次失败 [{url}]: {e}")
+            if i < max_retries - 1:
+                time.sleep(1 * (i + 1))
+    if last_error:
+        raise last_error
+    return None
 
 
 @mcp.tool(
@@ -105,12 +131,8 @@ def stock_prices(
                 if "换手率" not in df.columns:
                     df["换手率"] = None
                 # 添加技术指标
-                add_technical_indicators(df, df["收盘"], df["最低"], df["最高"])
-                columns = [
-                    "日期", "开盘", "收盘", "最高", "最低", "成交量", "换手率",
-                    "MACD", "DIF", "DEA", "KDJ.K", "KDJ.D", "KDJ.J", "RSI", "BOLL.U", "BOLL.M", "BOLL.L",
-                ]
-                available_cols = [c for c in columns if c in df.columns]
+                add_technical_indicators(df, df["收盘"], df["最低"], df["最高"], df.get("成交量"))
+                available_cols = [c for c in STOCK_PRICE_COLUMNS if c in df.columns]
                 all_lines = df.to_csv(columns=available_cols, index=False, float_format="%.2f").strip().split("\n")
                 return "\n".join([all_lines[0], *all_lines[-limit:]])
         except Exception as e:
@@ -137,12 +159,8 @@ def stock_prices(
         dfs = ak_cache(m[1], symbol=symbol, ttl=3600, **kws)
         if dfs is None or dfs.empty:
             continue
-        add_technical_indicators(dfs, dfs["收盘"], dfs["最低"], dfs["最高"])
-        columns = [
-            "日期", "开盘", "收盘", "最高", "最低", "成交量", "换手率",
-            "MACD", "DIF", "DEA", "KDJ.K", "KDJ.D", "KDJ.J", "RSI", "BOLL.U", "BOLL.M", "BOLL.L",
-        ]
-        all = dfs.to_csv(columns=columns, index=False, float_format="%.2f").strip().split("\n")
+        add_technical_indicators(dfs, dfs["收盘"], dfs["最低"], dfs["最高"], dfs.get("成交量"))
+        all = dfs.to_csv(columns=STOCK_PRICE_COLUMNS, index=False, float_format="%.2f").strip().split("\n")
         return "\n".join([all[0], *all[-limit:]])
     return f"Not Found for {symbol}.{market}"
 
@@ -154,7 +172,7 @@ def stock_us_daily(symbol, start_date="2025-01-01", period="daily"):
     dfs.rename(columns={"date": "日期", "open": "开盘", "close": "收盘", "high": "最高", "low": "最低", "volume": "成交量"}, inplace=True)
     dfs["换手率"] = None
     dfs.index = pd.to_datetime(dfs["日期"], errors="coerce")
-    return dfs[start_date:"2222-01-01"]
+    return dfs.loc[start_date:]
 
 def fund_etf_hist_sina(symbol, market="sh", start_date="2025-01-01", period="daily"):
     dfs = ak.fund_etf_hist_sina(symbol=f"{market}{symbol}")
@@ -163,7 +181,7 @@ def fund_etf_hist_sina(symbol, market="sh", start_date="2025-01-01", period="dai
     dfs.rename(columns={"date": "日期", "open": "开盘", "close": "收盘", "high": "最高", "low": "最低", "volume": "成交量"}, inplace=True)
     dfs["换手率"] = None
     dfs.index = pd.to_datetime(dfs["日期"], errors="coerce")
-    return dfs[start_date:"2222-01-01"]
+    return dfs.loc[start_date:]
 
 
 @mcp.tool(
@@ -321,15 +339,27 @@ def stock_zt_pool_strong_em(
 
 @mcp.tool(
     title="A股龙虎榜统计",
-    description="获取中国A股市场(上证、深证)的龙虎榜个股上榜统计数据",
+    description="获取中国A股市场(上证、深证)的龙虎榜个股上榜统计数据。支持多数据源。",
 )
 def stock_lhb_ggtj_sina(
     days: str = Field("5", description="统计最近天数，仅支持: [5/10/30/60]"),
     limit: int = Field(50, description="返回数量(int,30-100)", strict=False),
 ):
-    dfs = ak_cache(ak.stock_lhb_ggtj_sina, symbol=days, ttl=3600)
-    dfs = dfs.head(int(limit))
-    return dfs.to_csv(index=False, float_format="%.2f").strip()
+    try:
+        manager = get_data_manager()
+        dfs = manager.get_billboard(days)
+
+        if dfs is None or dfs.empty:
+            return "获取龙虎榜数据失败"
+
+        source = dfs.attrs.get('source', '-')
+        dfs = dfs.head(int(limit))
+        lines = [f"# 龙虎榜统计\n", f"数据来源: {source}\n"]
+        lines.append(dfs.to_csv(index=False, float_format="%.2f").strip())
+        return "\n".join(lines)
+    except Exception as e:
+        _LOGGER.warning(f"获取龙虎榜失败: {e}")
+        return f"获取龙虎榜数据失败: {e}"
 
 
 @mcp.tool(
@@ -406,7 +436,7 @@ def newsnow_news(channels=None):
 
 @mcp.tool(
     title="获取加密货币历史价格",
-    description="获取OKX加密货币的历史K线数据，包括价格、交易量和技术指标",
+    description="获取OKX加密货币的历史K线数据，包括价格、交易量和技术指标。支持自动重试。",
 )
 def okx_prices(
     instId: str = Field("BTC-USDT", description="产品ID，格式: BTC-USDT"),
@@ -415,19 +445,37 @@ def okx_prices(
 ):
     if not bar.endswith("m"):
         bar = bar.upper()
-    res = requests.get(
-        f"{OKX_BASE_URL}/api/v5/market/candles",
-        params={
-            "instId": instId,
-            "bar": bar,
-            "limit": max(300, limit + 62),
-        },
-        timeout=20,
-    )
-    data = res.json() or {}
-    dfs = pd.DataFrame(data.get("data", []))
+
+    # 重试机制
+    max_retries = 3
+    last_error = None
+    for i in range(max_retries):
+        try:
+            res = requests.get(
+                f"{OKX_BASE_URL}/api/v5/market/candles",
+                params={
+                    "instId": instId,
+                    "bar": bar,
+                    "limit": max(300, limit + 62),
+                },
+                headers={"User-Agent": USER_AGENT},
+                timeout=20,
+            )
+            data = res.json() or {}
+            dfs = pd.DataFrame(data.get("data", []))
+            if not dfs.empty:
+                break
+        except Exception as e:
+            last_error = e
+            _LOGGER.warning(f"OKX API 第{i+1}次尝试失败: {e}")
+            if i < max_retries - 1:
+                time.sleep(1 * (i + 1))
+    else:
+        return f"OKX API 请求失败: {last_error}"
+
     if dfs.empty:
-        return pd.DataFrame()
+        return f"未获取到 {instId} 数据"
+
     dfs.columns = ["时间", "开盘", "最高", "最低", "收盘", "成交量", "成交额", "成交额USDT", "K线已完结"]
     dfs.sort_values("时间", inplace=True)
     dfs["时间"] = pd.to_datetime(dfs["时间"], errors="coerce", unit="ms")
@@ -437,35 +485,33 @@ def okx_prices(
     dfs["收盘"] = pd.to_numeric(dfs["收盘"], errors="coerce")
     dfs["成交量"] = pd.to_numeric(dfs["成交量"], errors="coerce")
     dfs["成交额"] = pd.to_numeric(dfs["成交额"], errors="coerce")
-    add_technical_indicators(dfs, dfs["收盘"], dfs["最低"], dfs["最高"])
-    columns = [
-        "时间", "开盘", "收盘", "最高", "最低", "成交量", "成交额",
-        "MACD", "DIF", "DEA", "KDJ.K", "KDJ.D", "KDJ.J", "RSI", "BOLL.U", "BOLL.M", "BOLL.L",
-    ]
-    all = dfs.to_csv(columns=columns, index=False, float_format="%.2f").strip().split("\n")
+    add_technical_indicators(dfs, dfs["收盘"], dfs["最低"], dfs["最高"], dfs.get("成交量"))
+    all = dfs.to_csv(columns=CRYPTO_PRICE_COLUMNS, index=False, float_format="%.2f").strip().split("\n")
     return "\n".join([all[0], *all[-limit:]])
 
 
 @mcp.tool(
     title="获取加密货币杠杆多空比",
-    description="获取OKX加密货币借入计价货币与借入交易货币的累计数额比值",
+    description="获取OKX加密货币借入计价货币与借入交易货币的累计数额比值。支持自动重试。",
 )
 def okx_loan_ratios(
     symbol: str = Field("BTC", description="币种，格式: BTC 或 ETH"),
     period: str = Field("1h", description="时间粒度，仅支持: [5m/1H/1D] 注意大小写，仅分钟为小写m"),
 ):
-    res = requests.get(
-        f"{OKX_BASE_URL}/api/v5/rubik/stat/margin/loan-ratio",
-        params={
-            "ccy": symbol,
-            "period": period,
-        },
-        timeout=20,
-    )
-    data = res.json() or {}
+    try:
+        res = _http_get_with_retry(
+            f"{OKX_BASE_URL}/api/v5/rubik/stat/margin/loan-ratio",
+            params={"ccy": symbol, "period": period},
+        )
+        if res is None:
+            return f"OKX API 请求失败"
+        data = res.json() or {}
+    except Exception as e:
+        return f"OKX API 请求失败: {e}"
+
     dfs = pd.DataFrame(data.get("data", []))
     if dfs.empty:
-        return pd.DataFrame()
+        return f"未获取到 {symbol} 多空比数据"
     dfs.columns = ["时间", "多空比"]
     dfs["时间"] = pd.to_datetime(dfs["时间"], errors="coerce", unit="ms")
     dfs["多空比"] = pd.to_numeric(dfs["多空比"], errors="coerce")
@@ -474,26 +520,27 @@ def okx_loan_ratios(
 
 @mcp.tool(
     title="获取加密货币主动买卖情况",
-    description="获取OKX加密货币主动买入和卖出的交易量",
+    description="获取OKX加密货币主动买入和卖出的交易量。支持自动重试。",
 )
 def okx_taker_volume(
     symbol: str = Field("BTC", description="币种，格式: BTC 或 ETH"),
     period: str = Field("1h", description="时间粒度，仅支持: [5m/1H/1D] 注意大小写，仅分钟为小写m"),
     instType: str = Field("SPOT", description="产品类型 SPOT:现货 CONTRACTS:衍生品"),
 ):
-    res = requests.get(
-        f"{OKX_BASE_URL}/api/v5/rubik/stat/taker-volume",
-        params={
-            "ccy": symbol,
-            "period": period,
-            "instType": instType,
-        },
-        timeout=20,
-    )
-    data = res.json() or {}
+    try:
+        res = _http_get_with_retry(
+            f"{OKX_BASE_URL}/api/v5/rubik/stat/taker-volume",
+            params={"ccy": symbol, "period": period, "instType": instType},
+        )
+        if res is None:
+            return f"OKX API 请求失败"
+        data = res.json() or {}
+    except Exception as e:
+        return f"OKX API 请求失败: {e}"
+
     dfs = pd.DataFrame(data.get("data", []))
     if dfs.empty:
-        return pd.DataFrame()
+        return f"未获取到 {symbol} 主动买卖数据"
     dfs.columns = ["时间", "卖出量", "买入量"]
     dfs["时间"] = pd.to_datetime(dfs["时间"], errors="coerce", unit="ms")
     dfs["卖出量"] = pd.to_numeric(dfs["卖出量"], errors="coerce")
@@ -503,28 +550,48 @@ def okx_taker_volume(
 
 @mcp.tool(
     title="获取加密货币分析报告",
-    description="获取币安对加密货币的AI分析报告，此工具对分析加密货币非常有用，推荐使用",
+    description="获取币安对加密货币的AI分析报告，此工具对分析加密货币非常有用。支持自动重试。",
 )
 def binance_ai_report(
     symbol: str = Field("BTC", description="加密货币币种，格式: BTC 或 ETH"),
 ):
-    res = requests.post(
-        f"{BINANCE_BASE_URL}/bapi/bigdata/v3/friendly/bigdata/search/ai-report/report",
-        json={
-            'lang': 'zh-CN',
-            'token': symbol,
-            'symbol': f'{symbol}USDT',
-            'product': 'web-spot',
-            'timestamp': int(time.time() * 1000),
-            'translateToken': None,
-        },
-        headers={
-            'User-Agent': USER_AGENT,
-            'Referer': f'https://www.binance.com/zh-CN/trade/{symbol}_USDT?type=spot',
-            'lang': 'zh-CN',
-        },
-        timeout=20,
-    )
+    # 重试机制
+    max_retries = 3
+    last_error = None
+    res = None
+
+    for i in range(max_retries):
+        try:
+            res = requests.post(
+                f"{BINANCE_BASE_URL}/bapi/bigdata/v3/friendly/bigdata/search/ai-report/report",
+                json={
+                    'lang': 'zh-CN',
+                    'token': symbol,
+                    'symbol': f'{symbol}USDT',
+                    'product': 'web-spot',
+                    'timestamp': int(time.time() * 1000),
+                    'translateToken': None,
+                },
+                headers={
+                    'User-Agent': USER_AGENT,
+                    'Referer': f'https://www.binance.com/zh-CN/trade/{symbol}_USDT?type=spot',
+                    'lang': 'zh-CN',
+                },
+                timeout=20,
+            )
+            if res.status_code == 200:
+                break
+        except Exception as e:
+            last_error = e
+            _LOGGER.warning(f"Binance API 第{i+1}次尝试失败: {e}")
+            if i < max_retries - 1:
+                time.sleep(1 * (i + 1))
+    else:
+        return f"Binance API 请求失败: {last_error}"
+
+    if res is None:
+        return f"未获取到 {symbol} 分析报告"
+
     try:
         resp = res.json() or {}
     except Exception:
@@ -577,27 +644,31 @@ def stock_realtime(
         if quote is None:
             return f"Not Found for {symbol}.{market}"
 
-        # 格式化输出
+        # 格式化输出（Markdown）
         lines = [
-            f"股票代码: {quote.code}",
-            f"股票名称: {quote.name or '-'}",
-            f"数据来源: {quote.source.value if quote.source else '-'}",
-            f"最新价: {quote.price or '-'}",
-            f"涨跌幅: {quote.change_pct or '-'}%",
-            f"涨跌额: {quote.change_amount or '-'}",
-            f"成交量: {quote.volume or '-'}",
-            f"成交额: {quote.amount or '-'}",
-            f"换手率: {quote.turnover_rate or '-'}%",
-            f"量比: {quote.volume_ratio or '-'}",
-            f"振幅: {quote.amplitude or '-'}%",
-            f"今开: {quote.open_price or '-'}",
-            f"最高: {quote.high or '-'}",
-            f"最低: {quote.low or '-'}",
-            f"昨收: {quote.pre_close or '-'}",
-            f"市盈率: {quote.pe_ratio or '-'}",
-            f"市净率: {quote.pb_ratio or '-'}",
-            f"总市值: {quote.total_mv or '-'}",
-            f"流通市值: {quote.circ_mv or '-'}",
+            f"# {quote.name or symbol} ({quote.code}) 实时行情\n",
+            f"数据来源: {quote.source.value if quote.source else '-'}\n",
+            "## 价格",
+            f"- 最新价: {quote.price or '-'}",
+            f"- 涨跌幅: {quote.change_pct or '-'}%",
+            f"- 涨跌额: {quote.change_amount or '-'}",
+            f"- 今开: {quote.open_price or '-'}",
+            f"- 最高: {quote.high or '-'}",
+            f"- 最低: {quote.low or '-'}",
+            f"- 昨收: {quote.pre_close or '-'}",
+            f"- 振幅: {quote.amplitude or '-'}%",
+            "",
+            "## 成交",
+            f"- 成交量: {quote.volume or '-'}",
+            f"- 成交额: {quote.amount or '-'}",
+            f"- 换手率: {quote.turnover_rate or '-'}%",
+            f"- 量比: {quote.volume_ratio or '-'}",
+            "",
+            "## 估值",
+            f"- 市盈率: {quote.pe_ratio or '-'}",
+            f"- 市净率: {quote.pb_ratio or '-'}",
+            f"- 总市值: {quote.total_mv or '-'}",
+            f"- 流通市值: {quote.circ_mv or '-'}",
         ]
         return "\n".join(lines)
     except Exception as e:
@@ -618,16 +689,17 @@ def stock_chip(
         if chip is None:
             return f"Not Found for {symbol}"
 
-        # 格式化输出
+        # 格式化输出（Markdown）
         lines = [
-            f"股票代码: {chip.code}",
-            f"日期: {chip.date or '-'}",
-            f"获利比例: {chip.profit_ratio or '-'}%",
-            f"平均成本: {chip.avg_cost or '-'}",
-            f"90%成本区间: {chip.cost_90_low or '-'} - {chip.cost_90_high or '-'}",
-            f"90%集中度: {chip.concentration_90 or '-'}%",
-            f"70%成本区间: {chip.cost_70_low or '-'} - {chip.cost_70_high or '-'}",
-            f"70%集中度: {chip.concentration_70 or '-'}%",
+            f"# {chip.code} 筹码分布\n",
+            f"日期: {chip.date or '-'}\n",
+            "## 筹码数据",
+            f"- 获利比例: {chip.profit_ratio or '-'}%",
+            f"- 平均成本: {chip.avg_cost or '-'}",
+            f"- 90%成本区间: {chip.cost_90_low or '-'} - {chip.cost_90_high or '-'}",
+            f"- 90%集中度: {chip.concentration_90 or '-'}%",
+            f"- 70%成本区间: {chip.cost_70_low or '-'} - {chip.cost_70_high or '-'}",
+            f"- 70%集中度: {chip.concentration_70 or '-'}%",
         ]
 
         # 添加筹码状态分析
@@ -692,29 +764,260 @@ def data_source_status():
         manager = get_data_manager()
         status = manager.get_status()
 
-        lines = ["=== 数据源状态 ==="]
+        lines = ["# 数据源状态\n"]
         for fetcher in status.get('fetchers', []):
-            available = "✅" if fetcher['available'] else "❌"
-            lines.append(f"{available} {fetcher['name']} (优先级: {fetcher['priority']})")
+            available = "OK" if fetcher['available'] else "FAIL"
+            lines.append(f"- [{available}] {fetcher['name']} (优先级: {fetcher['priority']})")
 
-        lines.append("\n=== 熔断器状态 ===")
+        lines.append("\n## 熔断器状态")
 
         for name, breaker_status in [
             ("日线数据", status.get('daily_circuit_breaker', {})),
             ("实时行情", status.get('realtime_circuit_breaker', {})),
             ("筹码分布", status.get('chip_circuit_breaker', {})),
+            ("资金流向", status.get('fund_flow_circuit_breaker', {})),
+            ("板块数据", status.get('board_circuit_breaker', {})),
+            ("龙虎榜", status.get('billboard_circuit_breaker', {})),
         ]:
             if breaker_status:
-                lines.append(f"\n{name}:")
+                lines.append(f"\n### {name}")
                 for source, state in breaker_status.items():
-                    state_icon = "🟢" if state['state'] == 'closed' else "🔴"
-                    lines.append(f"  {state_icon} {source}: {state['state']} (失败次数: {state['failure_count']})")
+                    state_label = "正常" if state['state'] == 'closed' else "已熔断"
+                    lines.append(f"- {source}: {state_label} (失败次数: {state['failure_count']})")
             else:
-                lines.append(f"\n{name}: 无熔断记录")
+                lines.append(f"\n### {name}: 无熔断记录")
 
         return "\n".join(lines)
     except Exception as e:
         return f"获取数据源状态失败: {e}"
+
+
+@mcp.tool(
+    title="获取股票多周期统计",
+    description="获取A股多周期统计数据，包括累计涨跌幅、振幅、换手率等，支持5日、10日、20日、60日、120日等周期",
+)
+def stock_period_stats(
+    symbol: str = field_symbol,
+    market: str = Field("sh", description="股票市场，仅支持: sh(上证), sz(深证)"),
+):
+    try:
+        manager = get_data_manager()
+        # 获取足够多的历史数据用于计算
+        df = manager.get_daily_data(symbol, days=180)
+        if df is None or df.empty:
+            return f"Not Found for {symbol}.{market}"
+
+        df = to_chinese_columns(df)
+        close = df["收盘"]
+        high = df["最高"]
+        low = df["最低"]
+        volume = df.get("成交量")
+
+        periods = [5, 10, 20, 60, 120]
+        available_periods = [p for p in periods if len(close) >= p]
+
+        lines = [f"# {symbol} 多周期统计\n"]
+
+        # 价格统计
+        lines.append("## 价格统计")
+        lines.append(f"- 最新价: {close.iloc[-1]:.2f}")
+        for p in available_periods:
+            avg_price = close.iloc[-p:].mean()
+            max_price = high.iloc[-p:].max()
+            min_price = low.iloc[-p:].min()
+            lines.append(f"- {p}日均价: {avg_price:.2f}, 最高: {max_price:.2f}, 最低: {min_price:.2f}")
+
+        # 涨跌幅统计
+        lines.append("\n## 涨跌幅统计")
+        if len(close) >= 2:
+            today_change = (close.iloc[-1] / close.iloc[-2] - 1) * 100
+            lines.append(f"- 当日涨跌: {today_change:.2f}%")
+        for p in available_periods:
+            if len(close) > p:
+                change = (close.iloc[-1] / close.iloc[-p-1] - 1) * 100
+                lines.append(f"- {p}日累计涨跌: {change:.2f}%")
+
+        # 振幅统计
+        lines.append("\n## 振幅统计")
+        if len(high) >= 1:
+            today_amp = (high.iloc[-1] / low.iloc[-1] - 1) * 100
+            lines.append(f"- 当日振幅: {today_amp:.2f}%")
+        for p in available_periods:
+            amp = (high.iloc[-p:].max() / low.iloc[-p:].min() - 1) * 100
+            lines.append(f"- {p}日振幅: {amp:.2f}%")
+
+        # 换手率统计（如果有成交量数据）
+        if volume is not None and "换手率" in df.columns:
+            turnover = df["换手率"]
+            lines.append("\n## 换手率统计")
+            if len(turnover) >= 1 and turnover.iloc[-1] is not None:
+                lines.append(f"- 当日换手: {turnover.iloc[-1]:.2f}%")
+            for p in available_periods:
+                avg_turn = turnover.iloc[-p:].mean()
+                total_turn = turnover.iloc[-p:].sum()
+                if avg_turn is not None:
+                    lines.append(f"- {p}日均换手: {avg_turn:.2f}%, 累计换手: {total_turn:.2f}%")
+
+        # 成交量统计
+        if volume is not None:
+            lines.append("\n## 成交量统计(万手)")
+            lines.append(f"- 当日成交: {volume.iloc[-1] / 10000:.2f}")
+            for p in available_periods:
+                avg_vol = volume.iloc[-p:].mean() / 10000
+                lines.append(f"- {p}日均量: {avg_vol:.2f}")
+
+        return "\n".join(lines)
+    except Exception as e:
+        _LOGGER.warning(f"获取多周期统计失败: {e}")
+        return f"获取 {symbol} 多周期统计失败: {e}"
+
+
+@mcp.tool(
+    title="获取个股资金流向",
+    description="获取A股个股的资金流向数据，包括主力、超大单、大单、中单、小单的流入流出情况。支持多数据源自动故障转移。",
+)
+def stock_fund_flow(
+    symbol: str = field_symbol,
+):
+    try:
+        manager = get_data_manager()
+        dfs = manager.get_fund_flow(symbol)
+
+        if dfs is None or dfs.empty:
+            return f"Not Found for {symbol}"
+
+        source = dfs.attrs.get('source', '-')
+        # 获取最近几天的数据
+        dfs = dfs.tail(10)
+
+        lines = [f"# {symbol} 资金流向\n"]
+        lines.append(f"数据来源: {source}\n")
+        lines.append("## 近期资金流向")
+        lines.append("")
+
+        # 转换为CSV格式输出
+        cols_to_show = [c for c in dfs.columns if c not in ["序号"]]
+        csv_data = dfs.to_csv(columns=cols_to_show, index=False, float_format="%.2f").strip()
+        return "\n".join(lines) + "\n" + csv_data
+    except Exception as e:
+        _LOGGER.warning(f"获取资金流向失败: {e}")
+        return f"获取 {symbol} 资金流向失败: {e}"
+
+
+@mcp.tool(
+    title="获取个股所属板块",
+    description="获取A股个股所属的行业和概念板块信息",
+)
+def stock_sector_spot(
+    symbol: str = field_symbol,
+):
+    try:
+        manager = get_data_manager()
+        boards = manager.get_belong_board(symbol)
+
+        lines = [f"# {symbol} 所属板块\n"]
+
+        if boards is not None and not boards.empty:
+            source = boards.attrs.get('source', '-')
+            lines.append(f"数据来源: {source}\n")
+            lines.append("## 所属板块")
+            lines.append(boards.to_csv(index=False, float_format="%.2f").strip())
+        else:
+            lines.append("未获取到板块数据")
+
+        return "\n".join(lines)
+    except Exception as e:
+        _LOGGER.warning(f"获取板块信息失败: {e}")
+        return f"获取 {symbol} 板块信息失败: {e}"
+
+
+@mcp.tool(
+    title="获取板块成分股",
+    description="获取行业或概念板块的成分股列表。支持多数据源自动故障转移。",
+)
+def stock_board_cons(
+    board_name: str = Field(description="板块名称，如: 酿酒行业、新能源、人工智能"),
+    board_type: str = Field("industry", description="板块类型: industry(行业), concept(概念)"),
+    limit: int = Field(30, description="返回数量(int)", strict=False),
+):
+    try:
+        manager = get_data_manager()
+        dfs = manager.get_board_cons(board_name, board_type)
+
+        if dfs is None or dfs.empty:
+            return f"Not Found for {board_name}"
+
+        source = dfs.attrs.get('source', '-')
+        dfs = dfs.head(int(limit))
+        try:
+            dfs = dfs.drop(columns=["序号"])
+        except Exception:
+            pass
+
+        lines = [f"# {board_name} 成分股\n", f"数据来源: {source}\n"]
+        lines.append(dfs.to_csv(index=False, float_format="%.2f").strip())
+        return "\n".join(lines)
+    except Exception as e:
+        _LOGGER.warning(f"获取板块成分股失败: {e}")
+        return f"获取 {board_name} 成分股失败: {e}"
+
+
+def _fetch_board_cons_direct(board_name: str, board_type: str) -> pd.DataFrame | None:
+    """直接调用东财API获取板块成分股"""
+    # 先获取板块代码
+    try:
+        if board_type == "concept":
+            boards = ak_cache(ak.stock_board_concept_name_em, ttl=3600)
+            code_col = "板块代码"
+        else:
+            boards = ak_cache(ak.stock_board_industry_name_em, ttl=3600)
+            code_col = "板块代码"
+
+        if boards is None or boards.empty:
+            return None
+
+        matched = boards[boards["板块名称"] == board_name]
+        if matched.empty:
+            return None
+
+        board_code = matched[code_col].values[0]
+    except Exception:
+        return None
+
+    # 调用成分股API
+    url = "http://push2.eastmoney.com/api/qt/clist/get"
+    params = {
+        "pn": 1,
+        "pz": 100,
+        "po": 1,
+        "np": 1,
+        "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+        "fltt": 2,
+        "invt": 2,
+        "fid": "f3",
+        "fs": f"b:{board_code}+t:2",
+        "fields": "f12,f14,f2,f3,f4,f5,f6,f7,f15,f16,f17,f18",
+    }
+
+    max_retries = 3
+    for i in range(max_retries):
+        try:
+            res = requests.get(url, params=params, headers={"User-Agent": USER_AGENT}, timeout=20)
+            data = res.json()
+            if data and data.get("data") and data["data"].get("diff"):
+                df = pd.DataFrame(data["data"]["diff"])
+                df = df.rename(columns={
+                    "f12": "代码", "f14": "名称", "f2": "最新价", "f3": "涨跌幅",
+                    "f4": "涨跌额", "f5": "成交量", "f6": "成交额", "f7": "振幅",
+                    "f15": "最高", "f16": "最低", "f17": "今开", "f18": "昨收"
+                })
+                return df
+        except Exception as e:
+            _LOGGER.warning(f"直接API第{i+1}次尝试失败: {e}")
+            if i < max_retries - 1:
+                time.sleep(1 * (i + 1))
+
+    return None
 
 
 def ak_search(symbol=None, keyword=None, market=None):
@@ -771,7 +1074,82 @@ def ak_cache(fun, *args, **kwargs) -> pd.DataFrame | None:
             _LOGGER.exception(str(exc))
     return all
 
-def add_technical_indicators(df, clos, lows, high):
+
+def multi_source_fetch(
+    sources: list[tuple[callable, dict]],
+    ttl: int = 3600,
+    cache_key: str = None,
+) -> pd.DataFrame | None:
+    """
+    多数据源获取数据，自动故障转移
+
+    Args:
+        sources: [(函数, 参数字典), ...] 按优先级排序
+        ttl: 缓存时间（秒）
+        cache_key: 缓存键（可选）
+
+    Returns:
+        DataFrame 或 None
+    """
+    # 尝试从缓存获取
+    if cache_key:
+        cache = CacheKey.init(cache_key, ttl, ttl * 7)
+        cached = cache.get()
+        if cached is not None:
+            return cached
+
+    last_error = None
+    for func, kwargs in sources:
+        try:
+            _LOGGER.info(f"多数据源获取: {func.__name__} {kwargs}")
+            result = func(**kwargs)
+            if result is not None and not (hasattr(result, 'empty') and result.empty):
+                # 缓存成功结果
+                if cache_key:
+                    cache.set(result)
+                return result
+        except Exception as e:
+            last_error = e
+            _LOGGER.warning(f"[{func.__name__}] 获取失败: {e}")
+            continue
+
+    if last_error:
+        _LOGGER.error(f"所有数据源均失败，最后错误: {last_error}")
+    return None
+
+
+def fetch_with_retry(func, max_retries: int = 3, delay: float = 1.0, **kwargs):
+    """
+    带重试的数据获取
+
+    Args:
+        func: 获取函数
+        max_retries: 最大重试次数
+        delay: 重试间隔（秒）
+        **kwargs: 传递给函数的参数
+
+    Returns:
+        函数返回值或 None
+    """
+    import time
+    last_error = None
+    for i in range(max_retries):
+        try:
+            result = func(**kwargs)
+            if result is not None:
+                return result
+        except Exception as e:
+            last_error = e
+            _LOGGER.warning(f"[{func.__name__}] 第{i+1}次尝试失败: {e}")
+            if i < max_retries - 1:
+                time.sleep(delay * (i + 1))  # 递增延迟
+    return None
+
+def add_technical_indicators(df, clos, lows, high, volume=None):
+    # 计算多周期均线
+    for period in [5, 10, 20, 30, 60]:
+        df[f"MA{period}"] = clos.rolling(window=period, min_periods=1).mean()
+
     # 计算MACD指标
     ema12 = clos.ewm(span=12, adjust=False).mean()
     ema26 = clos.ewm(span=26, adjust=False).mean()
@@ -787,20 +1165,41 @@ def add_technical_indicators(df, clos, lows, high):
     df["KDJ.D"] = df["KDJ.K"].ewm(com=2, adjust=False).mean()
     df["KDJ.J"] = 3 * df["KDJ.K"] - 2 * df["KDJ.D"]
 
-    # 计算RSI指标
+    # 计算多周期RSI指标
     delta = clos.diff()
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
-    avg_gain = gain.rolling(window=14).mean()
-    avg_loss = loss.rolling(window=14).mean()
-    rs = avg_gain / avg_loss
-    df["RSI"] = 100 - (100 / (1 + rs))
+    for period in [6, 12, 14, 24]:
+        avg_gain = gain.rolling(window=period).mean()
+        avg_loss = loss.rolling(window=period).mean()
+        rs = avg_gain / avg_loss
+        col_name = "RSI" if period == 14 else f"RSI{period}"
+        df[col_name] = 100 - (100 / (1 + rs))
 
     # 计算布林带指标
     df["BOLL.M"] = clos.rolling(window=20).mean()
     std = clos.rolling(window=20).std()
     df["BOLL.U"] = df["BOLL.M"] + 2 * std
     df["BOLL.L"] = df["BOLL.M"] - 2 * std
+
+    # 计算OBV（能量潮指标）
+    if volume is not None:
+        obv = [0]
+        for i in range(1, len(clos)):
+            if clos.iloc[i] > clos.iloc[i-1]:
+                obv.append(obv[-1] + volume.iloc[i])
+            elif clos.iloc[i] < clos.iloc[i-1]:
+                obv.append(obv[-1] - volume.iloc[i])
+            else:
+                obv.append(obv[-1])
+        df["OBV"] = obv
+
+    # 计算ATR（真实波幅）
+    tr1 = high - lows
+    tr2 = abs(high - clos.shift(1))
+    tr3 = abs(lows - clos.shift(1))
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    df["ATR"] = tr.rolling(window=14).mean()
 
 
 def main():

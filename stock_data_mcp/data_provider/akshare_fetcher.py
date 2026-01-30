@@ -17,36 +17,11 @@ from .types import (
     ChipDistribution,
     RealtimeSource,
     safe_float,
-    safe_int,
+    is_etf_code,
+    is_hk_code,
 )
 
 _LOGGER = logging.getLogger(__name__)
-
-
-def _is_etf_code(stock_code: str) -> bool:
-    """判断是否为 ETF 代码"""
-    code = stock_code.lstrip('0')
-    if len(code) == 6:
-        prefix = code[:2]
-        return prefix in ('51', '52', '56', '58', '15', '16', '18')
-    return False
-
-
-def _is_hk_code(stock_code: str) -> bool:
-    """判断是否为港股代码"""
-    code = stock_code.lower()
-    if code.startswith('hk'):
-        return True
-    # 5位数字可能是港股
-    clean_code = code.lstrip('0')
-    return len(clean_code) == 5 and clean_code.isdigit()
-
-
-def _is_us_code(stock_code: str) -> bool:
-    """判断是否为美股代码"""
-    # 美股代码通常是1-5个大写字母，可能带有后缀如 .O .N
-    code = stock_code.upper().split('.')[0]
-    return len(code) <= 5 and code.isalpha()
 
 
 class AkshareFetcher(BaseFetcher):
@@ -77,9 +52,9 @@ class AkshareFetcher(BaseFetcher):
         self.random_sleep(2.0, 5.0)
 
         try:
-            if _is_hk_code(stock_code):
+            if is_hk_code(stock_code):
                 return self._fetch_hk_data(stock_code, start_date, end_date)
-            elif _is_etf_code(stock_code):
+            elif is_etf_code(stock_code):
                 return self._fetch_etf_data(stock_code, start_date, end_date)
             else:
                 return self._fetch_stock_data(stock_code, start_date, end_date)
@@ -203,9 +178,9 @@ class AkshareFetcher(BaseFetcher):
         try:
             self.random_sleep(0.5, 1.5)
 
-            if _is_hk_code(stock_code):
+            if is_hk_code(stock_code):
                 return self._get_hk_realtime_quote(stock_code)
-            elif _is_etf_code(stock_code):
+            elif is_etf_code(stock_code):
                 return self._get_etf_realtime_quote(stock_code)
             else:
                 if source == "sina":
@@ -417,4 +392,66 @@ class AkshareFetcher(BaseFetcher):
 
         except Exception as e:
             _LOGGER.warning(f"[{self.name}] 获取筹码分布失败: {e}")
+            return None
+
+    def get_fund_flow(self, stock_code: str) -> Optional[pd.DataFrame]:
+        """获取资金流向"""
+        try:
+            self.random_sleep(1.0, 2.0)
+
+            # 尝试上证
+            df = None
+            for market in ("sh", "sz"):
+                try:
+                    df = ak.stock_individual_fund_flow(stock=stock_code, market=market)
+                    if df is not None and not df.empty:
+                        break
+                except Exception:
+                    continue
+
+            return df
+        except Exception as e:
+            _LOGGER.warning(f"[{self.name}] 获取资金流向失败: {e}")
+            return None
+
+    def get_belong_board(self, stock_code: str) -> Optional[pd.DataFrame]:
+        """获取所属板块（回退到全部行业板块列表）"""
+        try:
+            self.random_sleep(1.0, 2.0)
+
+            industry_boards = ak.stock_board_industry_name_em()
+            if industry_boards is not None and not industry_boards.empty:
+                industry_boards.sort_values("涨跌幅", ascending=False, inplace=True)
+                top_bottom = pd.concat([industry_boards.head(15), industry_boards.tail(15)])
+                return top_bottom
+
+            return None
+        except Exception as e:
+            _LOGGER.warning(f"[{self.name}] 获取板块信息失败: {e}")
+            return None
+
+    def get_board_cons(self, board_name: str, board_type: str = "industry") -> Optional[pd.DataFrame]:
+        """获取板块成分股"""
+        try:
+            self.random_sleep(1.0, 2.0)
+
+            if board_type == "concept":
+                df = ak.stock_board_concept_cons_em(symbol=board_name)
+            else:
+                df = ak.stock_board_industry_cons_em(symbol=board_name)
+
+            return df
+        except Exception as e:
+            _LOGGER.warning(f"[{self.name}] 获取板块成分股失败: {e}")
+            return None
+
+    def get_billboard(self, days: str = "5") -> Optional[pd.DataFrame]:
+        """获取龙虎榜统计"""
+        try:
+            self.random_sleep(1.0, 2.0)
+
+            df = ak.stock_lhb_ggtj_sina(symbol=days)
+            return df
+        except Exception as e:
+            _LOGGER.warning(f"[{self.name}] 获取龙虎榜失败: {e}")
             return None

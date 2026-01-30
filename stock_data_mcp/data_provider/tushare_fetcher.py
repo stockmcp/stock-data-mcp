@@ -7,14 +7,12 @@ Tushare 数据获取器 (优先级 0/2)
 import os
 import logging
 import time
-from datetime import datetime
 from typing import Optional
 
 import pandas as pd
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from .base import BaseFetcher, DataFetchError, RateLimitError
-from .types import safe_float
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -177,3 +175,153 @@ class TushareFetcher(BaseFetcher):
         df = df[available_cols].copy()
 
         return df
+
+    def get_fund_flow(self, stock_code: str) -> Optional[pd.DataFrame]:
+        """获取资金流向"""
+        if not self._available or self._api is None:
+            return None
+
+        try:
+            self._check_rate_limit()
+            ts_code = self._convert_stock_code(stock_code)
+
+            # 获取最近10天的资金流向
+            df = self._api.moneyflow(ts_code=ts_code)
+            if df is None or df.empty:
+                return None
+
+            # 重命名列为中文
+            column_mapping = {
+                'trade_date': '日期',
+                'buy_sm_vol': '小单买入量',
+                'buy_sm_amount': '小单买入金额',
+                'sell_sm_vol': '小单卖出量',
+                'sell_sm_amount': '小单卖出金额',
+                'buy_md_vol': '中单买入量',
+                'buy_md_amount': '中单买入金额',
+                'sell_md_vol': '中单卖出量',
+                'sell_md_amount': '中单卖出金额',
+                'buy_lg_vol': '大单买入量',
+                'buy_lg_amount': '大单买入金额',
+                'sell_lg_vol': '大单卖出量',
+                'sell_lg_amount': '大单卖出金额',
+                'buy_elg_vol': '超大单买入量',
+                'buy_elg_amount': '超大单买入金额',
+                'sell_elg_vol': '超大单卖出量',
+                'sell_elg_amount': '超大单卖出金额',
+            }
+            df = df.rename(columns=column_mapping)
+            return df.head(10)
+        except Exception as e:
+            _LOGGER.warning(f"[{self.name}] 获取资金流向失败: {e}")
+            return None
+
+    def get_billboard(self, days: str = "5") -> Optional[pd.DataFrame]:
+        """获取龙虎榜统计"""
+        if not self._available or self._api is None:
+            return None
+
+        try:
+            self._check_rate_limit()
+            from datetime import datetime, timedelta
+
+            # 获取最近交易日的龙虎榜
+            end_date = datetime.now().strftime('%Y%m%d')
+            start_date = (datetime.now() - timedelta(days=int(days) + 5)).strftime('%Y%m%d')
+
+            df = self._api.top_list(start_date=start_date, end_date=end_date)
+            if df is None or df.empty:
+                return None
+
+            # 重命名列为中文
+            column_mapping = {
+                'trade_date': '上榜日期',
+                'ts_code': '股票代码',
+                'name': '股票名称',
+                'close': '收盘价',
+                'pct_change': '涨跌幅',
+                'turnover_rate': '换手率',
+                'amount': '龙虎榜成交额',
+                'l_sell': '龙虎榜卖出额',
+                'l_buy': '龙虎榜买入额',
+                'net_amount': '龙虎榜净买额',
+                'reason': '上榜原因',
+            }
+            df = df.rename(columns=column_mapping)
+            return df
+        except Exception as e:
+            _LOGGER.warning(f"[{self.name}] 获取龙虎榜失败: {e}")
+            return None
+
+    def get_belong_board(self, stock_code: str) -> Optional[pd.DataFrame]:
+        """获取所属板块（通过股票基本信息获取行业）"""
+        if not self._available or self._api is None:
+            return None
+
+        try:
+            self._check_rate_limit()
+            ts_code = self._convert_stock_code(stock_code)
+
+            # 获取股票基本信息
+            df = self._api.stock_basic(ts_code=ts_code, fields='ts_code,name,industry,market,list_date')
+            if df is None or df.empty:
+                return None
+
+            # 重命名列为中文
+            column_mapping = {
+                'ts_code': '股票代码',
+                'name': '股票名称',
+                'industry': '行业',
+                'market': '市场',
+                'list_date': '上市日期',
+            }
+            df = df.rename(columns=column_mapping)
+            return df
+        except Exception as e:
+            _LOGGER.warning(f"[{self.name}] 获取所属板块失败: {e}")
+            return None
+
+    def get_board_cons(self, board_name: str, board_type: str = "industry") -> Optional[pd.DataFrame]:
+        """获取板块成分股"""
+        if not self._available or self._api is None:
+            return None
+
+        try:
+            self._check_rate_limit()
+
+            # Tushare 通过行业获取成分股
+            if board_type == "industry":
+                df = self._api.stock_basic(
+                    industry=board_name,
+                    fields='ts_code,symbol,name,industry,market,list_date'
+                )
+            else:
+                # 概念板块需要使用 concept_detail 接口
+                # 先获取概念代码
+                concepts = self._api.concept()
+                if concepts is None or concepts.empty:
+                    return None
+
+                matched = concepts[concepts['name'].str.contains(board_name, na=False)]
+                if matched.empty:
+                    return None
+
+                concept_code = matched.iloc[0]['code']
+                df = self._api.concept_detail(id=concept_code)
+
+            if df is None or df.empty:
+                return None
+
+            # 重命名列为中文
+            column_mapping = {
+                'ts_code': '代码',
+                'symbol': '股票代码',
+                'name': '名称',
+                'industry': '行业',
+                'market': '市场',
+            }
+            df = df.rename(columns=column_mapping)
+            return df
+        except Exception as e:
+            _LOGGER.warning(f"[{self.name}] 获取板块成分股失败: {e}")
+            return None

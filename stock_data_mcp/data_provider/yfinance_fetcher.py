@@ -42,24 +42,27 @@ class YfinanceFetcher(BaseFetcher):
         if '.' in code:
             return code
 
-        # 港股
-        if code.startswith('HK') or code.startswith('0'):
-            # hk00700 -> 0700.HK
-            clean = code.replace('HK', '').lstrip('0')
-            if len(clean) <= 5:
-                return f"{clean.zfill(4)}.HK"
-
-        # A股沪市
-        if code.startswith('6') or code.startswith('9'):
-            return f"{code}.SS"
-
-        # A股深市
-        if code.startswith('0') or code.startswith('3') or code.startswith('2'):
-            return f"{code}.SZ"
-
-        # 美股（字母代码）
-        if code.isalpha():
+        # 美股（纯字母代码，1-5位）
+        if code.isalpha() and len(code) <= 5:
             return code
+
+        # 港股（明确以 HK 开头）
+        if code.startswith('HK'):
+            clean = code.replace('HK', '').lstrip('0')
+            return f"{clean.zfill(4)}.HK"
+
+        # A股：6位数字代码
+        if len(code) == 6 and code.isdigit():
+            # 沪市：6, 9 开头
+            if code.startswith(('6', '9')):
+                return f"{code}.SS"
+            # 深市：0, 2, 3 开头
+            if code.startswith(('0', '2', '3')):
+                return f"{code}.SZ"
+
+        # 港股：5位或更少的纯数字（如 00700 -> 0700.HK）
+        if code.isdigit() and len(code) <= 5:
+            return f"{code.lstrip('0').zfill(4)}.HK"
 
         # 默认作为沪市处理
         return f"{code}.SS"

@@ -15,21 +15,10 @@ from .types import (
     UnifiedRealtimeQuote,
     RealtimeSource,
     safe_float,
-    safe_int,
+    is_etf_code,
 )
 
 _LOGGER = logging.getLogger(__name__)
-
-
-def _is_etf_code(stock_code: str) -> bool:
-    """判断是否为 ETF 代码"""
-    code = stock_code.lstrip('0')
-    if len(code) == 6:
-        prefix = code[:2]
-        # 上交所 ETF: 51, 52, 56, 58
-        # 深交所 ETF: 15, 16, 18
-        return prefix in ('51', '52', '56', '58', '15', '16', '18')
-    return False
 
 
 class EfinanceFetcher(BaseFetcher):
@@ -72,7 +61,7 @@ class EfinanceFetcher(BaseFetcher):
         self.random_sleep(1.5, 3.0)
 
         try:
-            if _is_etf_code(stock_code):
+            if is_etf_code(stock_code):
                 return self._fetch_etf_data(stock_code, start_date, end_date)
             else:
                 return self._fetch_stock_data(stock_code, start_date, end_date)
@@ -157,6 +146,49 @@ class EfinanceFetcher(BaseFetcher):
 
         return df
 
+    def _create_quote_from_row(self, row) -> Optional[UnifiedRealtimeQuote]:
+        """从 DataFrame 行创建 UnifiedRealtimeQuote"""
+        code = str(row.get('股票代码', ''))
+        if not code:
+            return None
+        return UnifiedRealtimeQuote(
+            code=code,
+            name=row.get('股票名称'),
+            source=RealtimeSource.EFINANCE,
+            price=safe_float(row.get('最新价')),
+            change_pct=safe_float(row.get('涨跌幅')),
+            change_amount=safe_float(row.get('涨跌额')),
+            volume=safe_float(row.get('成交量')),
+            amount=safe_float(row.get('成交额')),
+            turnover_rate=safe_float(row.get('换手率')),
+            amplitude=safe_float(row.get('振幅')),
+            open_price=safe_float(row.get('今开')),
+            high=safe_float(row.get('最高')),
+            low=safe_float(row.get('最低')),
+            pre_close=safe_float(row.get('昨收')),
+        )
+
+    def _refresh_realtime_cache(self) -> bool:
+        """刷新实时行情缓存，返回是否成功"""
+        try:
+            self.random_sleep(0.5, 1.5)
+            df = self._ef.stock.get_realtime_quotes()
+            if df is None or df.empty:
+                return False
+
+            self._realtime_cache.clear()
+            self._realtime_cache_time = time.time()
+
+            for _, row in df.iterrows():
+                quote = self._create_quote_from_row(row)
+                if quote:
+                    self._realtime_cache[quote.code] = quote
+
+            return True
+        except Exception as e:
+            _LOGGER.warning(f"[{self.name}] 刷新实时行情缓存失败: {e}")
+            return False
+
     def get_realtime_quote(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
         """获取实时行情"""
         if not self._available:
@@ -169,46 +201,10 @@ class EfinanceFetcher(BaseFetcher):
         ):
             return self._realtime_cache[stock_code]
 
-        try:
-            self.random_sleep(0.5, 1.5)
-
-            # 获取全市场实时行情并缓存
-            df = self._ef.stock.get_realtime_quotes()
-            if df is None or df.empty:
-                return None
-
-            # 更新缓存
-            self._realtime_cache.clear()
-            self._realtime_cache_time = time.time()
-
-            for _, row in df.iterrows():
-                code = str(row.get('股票代码', ''))
-                if not code:
-                    continue
-
-                quote = UnifiedRealtimeQuote(
-                    code=code,
-                    name=row.get('股票名称'),
-                    source=RealtimeSource.EFINANCE,
-                    price=safe_float(row.get('最新价')),
-                    change_pct=safe_float(row.get('涨跌幅')),
-                    change_amount=safe_float(row.get('涨跌额')),
-                    volume=safe_float(row.get('成交量')),
-                    amount=safe_float(row.get('成交额')),
-                    turnover_rate=safe_float(row.get('换手率')),
-                    amplitude=safe_float(row.get('振幅')),
-                    open_price=safe_float(row.get('今开')),
-                    high=safe_float(row.get('最高')),
-                    low=safe_float(row.get('最低')),
-                    pre_close=safe_float(row.get('昨收')),
-                )
-                self._realtime_cache[code] = quote
-
+        # 刷新缓存
+        if self._refresh_realtime_cache():
             return self._realtime_cache.get(stock_code)
-
-        except Exception as e:
-            _LOGGER.warning(f"[{self.name}] 获取实时行情失败: {e}")
-            return None
+        return None
 
     def get_batch_realtime_quotes(
         self,
@@ -228,43 +224,9 @@ class EfinanceFetcher(BaseFetcher):
                 return result
 
         # 刷新缓存
-        try:
-            self.random_sleep(0.5, 1.5)
-            df = self._ef.stock.get_realtime_quotes()
-            if df is None or df.empty:
-                return {}
-
-            self._realtime_cache.clear()
-            self._realtime_cache_time = time.time()
-
-            for _, row in df.iterrows():
-                code = str(row.get('股票代码', ''))
-                if not code:
-                    continue
-
-                quote = UnifiedRealtimeQuote(
-                    code=code,
-                    name=row.get('股票名称'),
-                    source=RealtimeSource.EFINANCE,
-                    price=safe_float(row.get('最新价')),
-                    change_pct=safe_float(row.get('涨跌幅')),
-                    change_amount=safe_float(row.get('涨跌额')),
-                    volume=safe_float(row.get('成交量')),
-                    amount=safe_float(row.get('成交额')),
-                    turnover_rate=safe_float(row.get('换手率')),
-                    amplitude=safe_float(row.get('振幅')),
-                    open_price=safe_float(row.get('今开')),
-                    high=safe_float(row.get('最高')),
-                    low=safe_float(row.get('最低')),
-                    pre_close=safe_float(row.get('昨收')),
-                )
-                self._realtime_cache[code] = quote
-
+        if self._refresh_realtime_cache():
             return {code: self._realtime_cache[code] for code in stock_codes if code in self._realtime_cache}
-
-        except Exception as e:
-            _LOGGER.warning(f"[{self.name}] 批量获取实时行情失败: {e}")
-            return {}
+        return {}
 
     def get_base_info(self, stock_code: str) -> Optional[Dict]:
         """获取股票基本信息"""
@@ -302,4 +264,52 @@ class EfinanceFetcher(BaseFetcher):
             return df
         except Exception as e:
             _LOGGER.warning(f"[{self.name}] 获取所属板块失败: {e}")
+            return None
+
+    def get_fund_flow(self, stock_code: str) -> Optional[pd.DataFrame]:
+        """获取资金流向"""
+        if not self._available:
+            return None
+
+        try:
+            self.random_sleep(0.5, 1.5)
+            df = self._ef.stock.get_history_bill(stock_code)
+            return df
+        except Exception as e:
+            _LOGGER.warning(f"[{self.name}] 获取资金流向失败: {e}")
+            return None
+
+    def get_billboard(self, days: str = "5") -> Optional[pd.DataFrame]:
+        """获取龙虎榜统计（当日龙虎榜）"""
+        if not self._available:
+            return None
+
+        try:
+            self.random_sleep(0.5, 1.5)
+            df = self._ef.stock.get_daily_billboard()
+            return df
+        except Exception as e:
+            _LOGGER.warning(f"[{self.name}] 获取龙虎榜失败: {e}")
+            return None
+
+    def get_board_cons(self, board_name: str, board_type: str = "industry") -> Optional[pd.DataFrame]:
+        """获取板块成分股"""
+        if not self._available:
+            return None
+
+        try:
+            self.random_sleep(0.5, 1.5)
+            # efinance 通过板块代码获取成分股，需要先获取板块列表
+            if board_type == "concept":
+                # 获取概念板块列表
+                boards = self._ef.stock.get_realtime_quotes()
+                # efinance 可能没有直接的概念板块成分股接口，返回 None 以使用其他数据源
+                return None
+            else:
+                # 获取行业板块成分股
+                # efinance 的 get_members_stocks 需要板块代码
+                # 尝试通过板块名称查找
+                return None  # efinance 需要板块代码而非名称，回退到 akshare
+        except Exception as e:
+            _LOGGER.warning(f"[{self.name}] 获取板块成分股失败: {e}")
             return None

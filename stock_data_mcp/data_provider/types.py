@@ -5,7 +5,7 @@
 import time
 import logging
 from enum import Enum
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional, Dict, Any
 import pandas as pd
 import numpy as np
@@ -304,6 +304,9 @@ class CircuitBreaker:
 _realtime_circuit_breaker: Optional[CircuitBreaker] = None
 _chip_circuit_breaker: Optional[CircuitBreaker] = None
 _daily_circuit_breaker: Optional[CircuitBreaker] = None
+_fund_flow_circuit_breaker: Optional[CircuitBreaker] = None
+_board_circuit_breaker: Optional[CircuitBreaker] = None
+_billboard_circuit_breaker: Optional[CircuitBreaker] = None
 
 
 def get_realtime_circuit_breaker() -> CircuitBreaker:
@@ -337,6 +340,39 @@ def get_daily_circuit_breaker() -> CircuitBreaker:
             cooldown_seconds=300.0
         )
     return _daily_circuit_breaker
+
+
+def get_fund_flow_circuit_breaker() -> CircuitBreaker:
+    """获取资金流向熔断器（5分钟冷却）"""
+    global _fund_flow_circuit_breaker
+    if _fund_flow_circuit_breaker is None:
+        _fund_flow_circuit_breaker = CircuitBreaker(
+            failure_threshold=3,
+            cooldown_seconds=300.0
+        )
+    return _fund_flow_circuit_breaker
+
+
+def get_board_circuit_breaker() -> CircuitBreaker:
+    """获取板块数据熔断器（10分钟冷却）"""
+    global _board_circuit_breaker
+    if _board_circuit_breaker is None:
+        _board_circuit_breaker = CircuitBreaker(
+            failure_threshold=3,
+            cooldown_seconds=600.0
+        )
+    return _board_circuit_breaker
+
+
+def get_billboard_circuit_breaker() -> CircuitBreaker:
+    """获取龙虎榜熔断器（5分钟冷却）"""
+    global _billboard_circuit_breaker
+    if _billboard_circuit_breaker is None:
+        _billboard_circuit_breaker = CircuitBreaker(
+            failure_threshold=3,
+            cooldown_seconds=300.0
+        )
+    return _billboard_circuit_breaker
 
 
 # 标准列名定义
@@ -373,3 +409,32 @@ def to_chinese_columns(df: pd.DataFrame) -> pd.DataFrame:
 def to_english_columns(df: pd.DataFrame) -> pd.DataFrame:
     """将 DataFrame 的中文列名转换为英文"""
     return df.rename(columns=COLUMN_MAPPING_TO_EN)
+
+
+def is_etf_code(stock_code: str) -> bool:
+    """判断是否为 ETF 代码"""
+    code = stock_code.lstrip('0')
+    if len(code) == 6:
+        prefix = code[:2]
+        # 上交所 ETF: 51, 52, 56, 58
+        # 深交所 ETF: 15, 16, 18
+        return prefix in ('51', '52', '56', '58', '15', '16', '18')
+    return False
+
+
+def is_hk_code(stock_code: str) -> bool:
+    """判断是否为港股代码"""
+    code = stock_code.lower()
+    if code.startswith('hk'):
+        return True
+    # 港股代码：5位或更少的纯数字（考虑前导零）
+    if code.isdigit() and len(code) <= 5:
+        return True
+    return False
+
+
+def is_us_code(stock_code: str) -> bool:
+    """判断是否为美股代码"""
+    # 美股代码通常是1-5个大写字母，可能带有后缀如 .O .N
+    code = stock_code.upper().split('.')[0]
+    return len(code) <= 5 and code.isalpha()
