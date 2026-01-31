@@ -13,7 +13,7 @@ WORKDIR /app
 # 只复制依赖定义文件，最大化缓存命中
 COPY pyproject.toml uv.lock README.md 
 
-./RUN uv sync --frozen --no-dev --no-cache
+RUN uv sync --frozen --no-dev --no-cache
 
 # 再复制源码
 COPY . .
