@@ -21,8 +21,14 @@ jobs:
         platform:
           - linux/amd64
           - linux/arm64
+
     steps:
-      - name: Prepare
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepare platform
         run: |
           platform=${{ matrix.platform }}
           echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV
@@ -31,15 +37,14 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: |
-            ${{ env.GITHUB_CR_REPO }}
+          images: ${{ env.GITHUB_CR_REPO }}
 
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ secrets.GHCR_PAT }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -51,10 +56,11 @@ jobs:
         id: build
         uses: docker/build-push-action@v6
         with:
+          context: .
+          file: Dockerfile
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
-          tags: |
-            ${{ env.GITHUB_CR_REPO }}
+          tags: ${{ env.GITHUB_CR_REPO }}
           outputs: type=image,push-by-digest=true,name-canonical=true,push=true
 
       - name: Export digest
@@ -73,8 +79,7 @@ jobs:
 
   merge:
     runs-on: ubuntu-latest
-    needs:
-      - build
+    needs: build
     steps:
       - name: Download digests
         uses: actions/download-artifact@v4
@@ -93,12 +98,11 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Docker meta
+      - name: Docker meta for merge
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: |
-            ${{ env.GITHUB_CR_REPO }}
+          images: ${{ env.GITHUB_CR_REPO }}
           tags: |
             type=ref,event=branch
             type=ref,event=pr
@@ -114,7 +118,7 @@ jobs:
           fi
           echo "DOCKER_METADATA_TAGS=$tags" >> $GITHUB_ENV
 
-      - name: Create manifest list and push
+      - name: Create multi-arch manifest
         working-directory: ${{ runner.temp }}/digests
         run: |
           docker buildx imagetools create ${{ env.DOCKER_METADATA_TAGS }} \
@@ -122,4 +126,5 @@ jobs:
 
       - name: Inspect image
         run: |
-          docker buildx imagetools inspect ${{ env.GITHUB_CR_REPO }}:${{ env.DOCKER_METADATA_OUTPUT_VERSION }}
+          docker buildx imagetools inspect ${{ env.GITHUB_CR_REPO }}:${{ github.ref_name }}
+
