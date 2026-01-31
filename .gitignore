@@ -15,9 +15,6 @@ CLAUDE.md
 .idea
 .cache
 
-# uv / lock
-uv.lock
-
 .DS_Store
 output.txt
 Thumbs.db

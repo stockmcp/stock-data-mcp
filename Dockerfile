@@ -11,10 +11,9 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 # 只复制依赖定义文件，最大化缓存命中
-COPY pyproject.toml uv.lock ./
+COPY pyproject.toml uv.lock README.md 
 
-# 用 frozen（适配多架构）
-RUN uv sync --frozen --no-dev --no-cache
+./RUN uv sync --frozen --no-dev --no-cache
 
 # 再复制源码
 COPY . .
