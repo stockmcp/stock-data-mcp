@@ -28,3 +28,8 @@ stock-data-mcp = "stock_data_mcp:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+# -------------------------------
+# 新增部分，告诉 hatch 要打包的源码目录
+[tool.hatch.build.targets.wheel]
+packages = ["stock_data_mcp"]
