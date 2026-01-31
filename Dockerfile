@@ -9,10 +9,19 @@ ENV PYTHONUNBUFFERED=1 \
     PORT=80
 
 WORKDIR /app
+
+# 只复制依赖定义文件，最大化缓存命中
+COPY pyproject.toml uv.lock ./
+
+# 用 frozen（适配多架构）
+RUN uv sync --frozen --no-dev --no-cache
+
+# 再复制源码
 COPY . .
 
-RUN apt update && apt install -y --no-install-recommends netcat-openbsd && rm -rf /var/lib/apt/lists/*
-RUN uv sync --locked --no-dev --no-cache
+RUN apt update && apt install -y --no-install-recommends netcat-openbsd \
+    && rm -rf /var/lib/apt/lists/*
 
 CMD ["uv", "run", "-m", "stock_data_mcp"]
 HEALTHCHECK --interval=1m --start-period=30s CMD nc -zn 0.0.0.0 $PORT || exit 1
+
