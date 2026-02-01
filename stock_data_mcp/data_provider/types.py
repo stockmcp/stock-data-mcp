@@ -307,6 +307,7 @@ _daily_circuit_breaker: Optional[CircuitBreaker] = None
 _fund_flow_circuit_breaker: Optional[CircuitBreaker] = None
 _board_circuit_breaker: Optional[CircuitBreaker] = None
 _billboard_circuit_breaker: Optional[CircuitBreaker] = None
+_us_financials_circuit_breaker: Optional[CircuitBreaker] = None
 
 
 def get_realtime_circuit_breaker() -> CircuitBreaker:
@@ -373,6 +374,17 @@ def get_billboard_circuit_breaker() -> CircuitBreaker:
             cooldown_seconds=300.0
         )
     return _billboard_circuit_breaker
+
+
+def get_us_financials_circuit_breaker() -> CircuitBreaker:
+    """获取美股基本面熔断器（10分钟冷却，适应 API 限流）"""
+    global _us_financials_circuit_breaker
+    if _us_financials_circuit_breaker is None:
+        _us_financials_circuit_breaker = CircuitBreaker(
+            failure_threshold=3,
+            cooldown_seconds=600.0  # 10 分钟，适应 Alpha Vantage 限流
+        )
+    return _us_financials_circuit_breaker
 
 
 # 标准列名定义

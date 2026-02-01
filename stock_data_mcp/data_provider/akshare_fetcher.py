@@ -1,6 +1,6 @@
 """
-Akshare 数据获取器 (优先级 1)
-使用 akshare 库获取股票数据，支持多数据源（东财、新浪、腾讯）
+Akshare 数据获取器 (优先级 2)
+使用 akshare 库获取股票数据，支持多数据源（东财、新浪、腾讯）及多市场
 """
 
 import logging
@@ -28,7 +28,7 @@ class AkshareFetcher(BaseFetcher):
     """Akshare 数据获取器"""
 
     name = "AkshareFetcher"
-    priority = 1
+    priority = 2  # 多市场支持
 
     def __init__(self):
         super().__init__()

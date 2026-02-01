@@ -36,6 +36,7 @@ docker run -p 8808:80 ghcr.io/stockmcp/stock-data-mcp
 | 变量 | 说明 |
 |------|------|
 | `TUSHARE_TOKEN` | Tushare Pro API Token |
+| `ALPHA_VANTAGE_API_KEY` | Alpha Vantage API Key（美股数据增强，不配置则使用 yfinance 免费源） |
 | `OKX_BASE_URL` | OKX API 代理地址 |
 | `BINANCE_BASE_URL` | Binance API 代理地址 |
 
@@ -58,6 +59,12 @@ docker run -p 8808:80 ghcr.io/stockmcp/stock-data-mcp
 | `stock_zt_pool_em` | A股涨停股池 |
 | `stock_lhb_ggtj_sina` | A股龙虎榜 |
 | `stock_sector_fund_flow_rank` | 板块资金流 |
+| `stock_overview_us` | 美股公司概览（Alpha Vantage / yfinance） |
+| `stock_financials_us` | 美股财务报表（Alpha Vantage / yfinance） |
+| `stock_news_us` | 美股新闻情绪（需 Alpha Vantage API key） |
+| `stock_earnings_us` | 美股盈利数据（Alpha Vantage / yfinance） |
+| `stock_insider_us` | 美股内部交易（Alpha Vantage / yfinance） |
+| `stock_tech_indicators_us` | 美股技术指标（需 Alpha Vantage API key） |
 | `okx_prices` | 加密货币K线 |
 | `binance_ai_report` | 加密货币AI分析 |
 | `data_source_status` | 数据源状态 |

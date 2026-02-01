@@ -36,6 +36,7 @@ docker run -p 8808:80 ghcr.io/stockmcp/stock-data-mcp
 | Variable | Description |
 |----------|-------------|
 | `TUSHARE_TOKEN` | Tushare Pro API Token |
+| `ALPHA_VANTAGE_API_KEY` | Alpha Vantage API Key (enhanced US data, falls back to yfinance if not set) |
 | `OKX_BASE_URL` | OKX API proxy URL |
 | `BINANCE_BASE_URL` | Binance API proxy URL |
 
@@ -58,6 +59,12 @@ docker run -p 8808:80 ghcr.io/stockmcp/stock-data-mcp
 | `stock_zt_pool_em` | A-share limit-up pool |
 | `stock_lhb_ggtj_sina` | A-share top traders |
 | `stock_sector_fund_flow_rank` | Sector fund flow |
+| `stock_overview_us` | US company overview (Alpha Vantage / yfinance) |
+| `stock_financials_us` | US financial statements (Alpha Vantage / yfinance) |
+| `stock_news_us` | US news sentiment (Alpha Vantage API key required) |
+| `stock_earnings_us` | US earnings data (Alpha Vantage / yfinance) |
+| `stock_insider_us` | US insider transactions (Alpha Vantage / yfinance) |
+| `stock_tech_indicators_us` | US technical indicators (Alpha Vantage API key required) |
 | `okx_prices` | Crypto K-lines |
 | `binance_ai_report` | Crypto AI analysis |
 | `data_source_status` | Data source status |

@@ -1,7 +1,7 @@
 """
-Tushare 数据获取器 (优先级 0/2)
-使用 tushare 库获取股票数据
-需要 TUSHARE_TOKEN 环境变量，有 token 时优先级为 0，无 token 时为 2
+Tushare 数据获取器
+使用 tushare 库获取 A 股数据，需要配置 TUSHARE_TOKEN 环境变量。
+配置后优先级最高（优先级 0）。
 """
 
 import os
@@ -21,7 +21,7 @@ class TushareFetcher(BaseFetcher):
     """Tushare 数据获取器"""
 
     name = "TushareFetcher"
-    priority = 2  # 默认优先级
+    priority = 0  # A 股首选（需配置 token）
 
     # 限流配置：免费版 80次/分钟
     RATE_LIMIT = 80
@@ -41,13 +41,12 @@ class TushareFetcher(BaseFetcher):
                 ts.set_token(token)
                 self._api = ts.pro_api()
                 self._available = True
-                self.priority = 0  # 有 token 提升为最高优先级
-                _LOGGER.info("✅ Tushare API 初始化成功，优先级提升为 0")
+                _LOGGER.info("Tushare API 初始化成功")
             except Exception as e:
                 _LOGGER.warning(f"Tushare API 初始化失败: {e}")
                 self._available = False
         else:
-            _LOGGER.info("未配置 TUSHARE_TOKEN，TushareFetcher 降级为优先级 2")
+            _LOGGER.info("未配置 TUSHARE_TOKEN，TushareFetcher 不可用")
             self._available = False
 
     def _check_rate_limit(self):

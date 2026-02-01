@@ -1202,6 +1202,308 @@ def add_technical_indicators(df, clos, lows, high, volume=None):
     df["ATR"] = tr.rolling(window=14).mean()
 
 
+# ==================== Alpha Vantage 美股工具 ====================
+
+ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY")
+
+
+@mcp.tool(
+    title="美股公司概览",
+    description="获取美股公司基本面概览，包括市值、PE、EPS、股息率、52周高低点、分析师评级等。支持多数据源: Alpha Vantage (需API key) -> yfinance (免费)。",
+)
+def stock_overview_us(
+    symbol: str = Field(description="美股代码，如: AAPL, MSFT, GOOGL, TSLA"),
+):
+    try:
+        manager = get_data_manager()
+        overview = manager.get_us_company_overview(symbol)
+        if overview is None:
+            return f"未获取到 {symbol} 的公司概览数据"
+        return manager.format_us_overview_report(overview)
+    except Exception as e:
+        _LOGGER.warning(f"获取美股公司概览失败: {e}")
+        return f"获取 {symbol} 公司概览失败: {e}"
+
+
+@mcp.tool(
+    title="美股财务报表",
+    description="获取美股财务报表数据，包括资产负债表、利润表、现金流量表。支持多数据源: Alpha Vantage (需API key) -> yfinance (免费)。",
+)
+def stock_financials_us(
+    symbol: str = Field(description="美股代码，如: AAPL, MSFT, GOOGL"),
+    report_type: str = Field("balance_sheet", description="报表类型: balance_sheet(资产负债表), income_statement(利润表), cash_flow(现金流量表)"),
+    quarterly: bool = Field(True, description="是否获取季度数据，False则获取年度数据"),
+):
+    try:
+        manager = get_data_manager()
+
+        if report_type == "balance_sheet":
+            data = manager.get_us_balance_sheet(symbol, quarterly)
+            title = "资产负债表"
+        elif report_type == "income_statement":
+            data = manager.get_us_income_statement(symbol, quarterly)
+            title = "利润表"
+        elif report_type == "cash_flow":
+            data = manager.get_us_cash_flow(symbol, quarterly)
+            title = "现金流量表"
+        else:
+            return f"不支持的报表类型: {report_type}"
+
+        if data is None or not data.get("reports"):
+            return f"未获取到 {symbol} 的{title}数据"
+
+        # 格式化输出
+        period_type = "季度" if quarterly else "年度"
+        lines = [f"# {symbol} {title} ({period_type})\n"]
+
+        for i, report in enumerate(data["reports"][:4]):
+            fiscal_date = report.get("fiscalDateEnding", "-")
+            lines.append(f"## {fiscal_date}")
+
+            # 根据报表类型选择关键字段
+            if report_type == "balance_sheet":
+                key_fields = [
+                    ("totalAssets", "总资产"),
+                    ("totalLiabilities", "总负债"),
+                    ("totalShareholderEquity", "股东权益"),
+                    ("cashAndCashEquivalentsAtCarryingValue", "现金及等价物"),
+                    ("currentDebt", "短期债务"),
+                    ("longTermDebt", "长期债务"),
+                ]
+            elif report_type == "income_statement":
+                key_fields = [
+                    ("totalRevenue", "总收入"),
+                    ("grossProfit", "毛利润"),
+                    ("operatingIncome", "营业利润"),
+                    ("netIncome", "净利润"),
+                    ("ebitda", "EBITDA"),
+                ]
+            else:  # cash_flow
+                key_fields = [
+                    ("operatingCashflow", "经营现金流"),
+                    ("capitalExpenditures", "资本支出"),
+                    ("dividendPayout", "股息支出"),
+                    ("netIncome", "净利润"),
+                ]
+
+            for field, label in key_fields:
+                value = report.get(field, "-")
+                if value and value != "None":
+                    try:
+                        num = float(value)
+                        if abs(num) >= 1e9:
+                            value = f"${num/1e9:.2f}B"
+                        elif abs(num) >= 1e6:
+                            value = f"${num/1e6:.2f}M"
+                        else:
+                            value = f"${num:,.0f}"
+                    except (ValueError, TypeError):
+                        pass
+                lines.append(f"- {label}: {value}")
+            lines.append("")
+
+        return "\n".join(lines)
+    except Exception as e:
+        _LOGGER.warning(f"获取美股财务报表失败: {e}")
+        return f"获取 {symbol} 财务报表失败: {e}"
+
+
+@mcp.tool(
+    title="美股新闻情绪",
+    description="获取美股相关新闻及情绪分析数据。需要配置 ALPHA_VANTAGE_API_KEY 环境变量。",
+)
+def stock_news_us(
+    symbol: str = Field("", description="美股代码（可选），如: AAPL, MSFT。留空则获取市场整体新闻"),
+    topics: str = Field("", description="主题过滤（可选），如: technology, earnings, ipo, mergers_and_acquisitions"),
+    limit: int = Field(20, description="返回数量限制，最大50"),
+):
+    if not ALPHA_VANTAGE_API_KEY:
+        return "错误: 未配置 ALPHA_VANTAGE_API_KEY 环境变量，无法使用此功能"
+
+    try:
+        manager = get_data_manager()
+        news_data = manager.get_us_news_sentiment(
+            symbol=symbol if symbol else None,
+            topics=topics if topics else None,
+            limit=min(limit, 50)
+        )
+        if news_data is None:
+            return "未获取到新闻数据"
+        return manager.format_us_news_report(news_data, limit)
+    except Exception as e:
+        _LOGGER.warning(f"获取美股新闻情绪失败: {e}")
+        return f"获取新闻情绪失败: {e}"
+
+
+@mcp.tool(
+    title="美股盈利数据",
+    description="获取美股历史盈利数据和分析师预期。支持多数据源: Alpha Vantage (需API key) -> yfinance (免费)。",
+)
+def stock_earnings_us(
+    symbol: str = Field(description="美股代码，如: AAPL, MSFT, GOOGL"),
+):
+    try:
+        manager = get_data_manager()
+        data = manager.get_us_earnings(symbol)
+        if data is None:
+            return f"未获取到 {symbol} 的盈利数据"
+
+        lines = [f"# {symbol} 盈利数据\n"]
+
+        # 年度盈利
+        annual = data.get("annualEarnings", [])
+        if annual:
+            lines.append("## 年度盈利")
+            for item in annual[:5]:
+                year = item.get("fiscalDateEnding", "-")
+                eps = item.get("reportedEPS", "-")
+                lines.append(f"- {year}: EPS ${eps}")
+            lines.append("")
+
+        # 季度盈利
+        quarterly = data.get("quarterlyEarnings", [])
+        if quarterly:
+            lines.append("## 季度盈利")
+            for item in quarterly[:8]:
+                date = item.get("fiscalDateEnding", "-")
+                reported = item.get("reportedEPS", "-")
+                estimated = item.get("estimatedEPS", "-")
+                surprise = item.get("surprisePercentage", "-")
+                lines.append(f"- {date}: 实际 ${reported}, 预期 ${estimated}, 惊喜 {surprise}%")
+            lines.append("")
+
+        return "\n".join(lines)
+    except Exception as e:
+        _LOGGER.warning(f"获取美股盈利数据失败: {e}")
+        return f"获取 {symbol} 盈利数据失败: {e}"
+
+
+@mcp.tool(
+    title="美股内部交易",
+    description="获取美股公司内部人交易记录。支持多数据源: Alpha Vantage (需API key) -> yfinance (免费)。",
+)
+def stock_insider_us(
+    symbol: str = Field(description="美股代码，如: AAPL, MSFT, GOOGL"),
+    limit: int = Field(20, description="返回数量限制"),
+):
+    try:
+        manager = get_data_manager()
+        data = manager.get_us_insider_transactions(symbol)
+        if data is None:
+            return f"未获取到 {symbol} 的内部交易数据"
+
+        transactions = data.get("data", [])
+        if not transactions:
+            return f"{symbol} 暂无内部交易记录"
+
+        lines = [f"# {symbol} 内部交易记录\n"]
+
+        for item in transactions[:limit]:
+            date = item.get("transaction_date", "-")
+            owner = item.get("owner_name", "-")
+            position = item.get("owner_title", "-")
+            trans_type = item.get("acquisition_or_disposition", "-")
+            shares = item.get("shares", "-")
+            value = item.get("transaction_value", "-")
+
+            type_label = "买入" if trans_type == "A" else "卖出" if trans_type == "D" else trans_type
+
+            lines.append(f"## {date}")
+            lines.append(f"- 内部人: {owner} ({position})")
+            lines.append(f"- 类型: {type_label}")
+            lines.append(f"- 股数: {shares}")
+            if value and value != "-":
+                try:
+                    value_num = float(value)
+                    if value_num >= 1e6:
+                        value = f"${value_num/1e6:.2f}M"
+                    else:
+                        value = f"${value_num:,.0f}"
+                except (ValueError, TypeError):
+                    pass
+            lines.append(f"- 金额: {value}")
+            lines.append("")
+
+        return "\n".join(lines)
+    except Exception as e:
+        _LOGGER.warning(f"获取美股内部交易失败: {e}")
+        return f"获取 {symbol} 内部交易失败: {e}"
+
+
+@mcp.tool(
+    title="美股技术指标",
+    description="获取美股技术分析指标数据，如SMA、EMA、RSI、MACD、布林带等。需要配置 ALPHA_VANTAGE_API_KEY 环境变量。",
+)
+def stock_tech_indicators_us(
+    symbol: str = Field(description="美股代码，如: AAPL, MSFT, GOOGL"),
+    indicator: str = Field("RSI", description="指标类型: SMA(简单移动平均), EMA(指数移动平均), RSI(相对强弱), MACD(指数平滑移动平均), BBANDS(布林带), STOCH(随机指标), ADX(趋向指标), ATR(真实波幅)"),
+    interval: str = Field("daily", description="时间间隔: daily(日), weekly(周), monthly(月)"),
+    time_period: int = Field(14, description="计算周期，如RSI常用14，SMA常用20"),
+    limit: int = Field(30, description="返回数量限制"),
+):
+    if not ALPHA_VANTAGE_API_KEY:
+        return "错误: 未配置 ALPHA_VANTAGE_API_KEY 环境变量，无法使用此功能"
+
+    try:
+        manager = get_data_manager()
+        data = manager.get_us_technical_indicator(symbol, indicator, interval, time_period)
+
+        if data is None or not data.get("data"):
+            return f"未获取到 {symbol} 的 {indicator} 指标数据"
+
+        # 格式化输出
+        lines = [
+            f"# {symbol} {indicator.upper()} 技术指标",
+            f"",
+            f"- 时间间隔: {interval}",
+            f"- 计算周期: {time_period}",
+            f"",
+            "## 数据",
+        ]
+
+        # 根据指标类型构建表头
+        indicator_upper = indicator.upper()
+        if indicator_upper == "MACD":
+            lines.append("| 日期 | MACD | Signal | Histogram |")
+            lines.append("|------|------|--------|-----------|")
+        elif indicator_upper == "BBANDS":
+            lines.append("| 日期 | Upper | Middle | Lower |")
+            lines.append("|------|-------|--------|-------|")
+        elif indicator_upper == "STOCH":
+            lines.append("| 日期 | SlowK | SlowD |")
+            lines.append("|------|-------|-------|")
+        else:
+            lines.append(f"| 日期 | {indicator_upper} |")
+            lines.append("|------|--------|")
+
+        for entry in data["data"][:limit]:
+            date = entry.get("date", "-")
+
+            if indicator_upper == "MACD":
+                macd = entry.get("MACD", "-")
+                signal = entry.get("MACD_Signal", "-")
+                hist = entry.get("MACD_Hist", "-")
+                lines.append(f"| {date} | {macd} | {signal} | {hist} |")
+            elif indicator_upper == "BBANDS":
+                upper = entry.get("Real Upper Band", "-")
+                middle = entry.get("Real Middle Band", "-")
+                lower = entry.get("Real Lower Band", "-")
+                lines.append(f"| {date} | {upper} | {middle} | {lower} |")
+            elif indicator_upper == "STOCH":
+                slowk = entry.get("SlowK", "-")
+                slowd = entry.get("SlowD", "-")
+                lines.append(f"| {date} | {slowk} | {slowd} |")
+            else:
+                # 单值指标 (SMA, EMA, RSI, ADX 等)
+                value = entry.get(indicator_upper, "-")
+                lines.append(f"| {date} | {value} |")
+
+        return "\n".join(lines)
+    except Exception as e:
+        _LOGGER.warning(f"获取美股技术指标失败: {e}")
+        return f"获取 {symbol} {indicator} 指标失败: {e}"
+
+
 def main():
     port = int(os.getenv("PORT", 0)) or 80
     parser = argparse.ArgumentParser(description="Stock Data MCP Server")

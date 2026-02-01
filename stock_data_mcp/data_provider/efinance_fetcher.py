@@ -1,6 +1,6 @@
 """
-Efinance 数据获取器 (优先级 0 - 最高)
-使用 efinance 库获取东方财富数据
+Efinance 数据获取器 (优先级 1)
+使用 efinance 库获取东方财富 A 股数据
 """
 
 import logging
@@ -25,7 +25,7 @@ class EfinanceFetcher(BaseFetcher):
     """Efinance 数据获取器"""
 
     name = "EfinanceFetcher"
-    priority = 0  # 最高优先级
+    priority = 1  # A 股次选
 
     def __init__(self):
         super().__init__()
