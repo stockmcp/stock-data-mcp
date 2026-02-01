@@ -133,14 +133,19 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest,enable=${{ github.event_name == 'release' }}
+            type=raw,value=${{ steps.version.outputs.value }},enable=${{ github.event_name == 'workflow_dispatch' }}
 
       - name: Docker tags
+        id: tags
         run: |
           tags=$(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON")
-          if [ -z "$tags" ]; then
+          first_tag=$(jq -cr '.tags[0]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          if [ -z "$tags" ] || [ "$tags" = "null" ]; then
             tags="-t ${{ env.GITHUB_CR_REPO }}:${{ steps.version.outputs.value }}"
+            first_tag="${{ env.GITHUB_CR_REPO }}:${{ steps.version.outputs.value }}"
           fi
           echo "DOCKER_METADATA_TAGS=$tags" >> $GITHUB_ENV
+          echo "first_tag=$first_tag" >> $GITHUB_OUTPUT
 
       - name: Create multi-arch manifest
         working-directory: ${{ runner.temp }}/digests
@@ -150,4 +155,4 @@ jobs:
 
       - name: Inspect image
         run: |
-          docker buildx imagetools inspect ${{ env.GITHUB_CR_REPO }}:${{ steps.version.outputs.value }}
+          docker buildx imagetools inspect ${{ steps.tags.outputs.first_tag }}
