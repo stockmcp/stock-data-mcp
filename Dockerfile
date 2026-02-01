@@ -14,14 +14,17 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# 先复制依赖文件和 README，利用 Docker 缓存
+# 先复制依赖文件，利用 Docker 缓存
 COPY pyproject.toml uv.lock README.md ./
 
-# 安装依赖（frozen 不安装 dev 依赖）
-RUN uv sync --frozen --no-dev --no-cache
+# 只安装依赖，不安装项目本身（因为源码还没复制）
+RUN uv sync --frozen --no-dev --no-cache --no-install-project
 
-# 再复制完整源码
+# 复制完整源码
 COPY . .
+
+# 安装项目（此时源码已存在）
+RUN uv sync --frozen --no-dev --no-cache
 
 # 安装必要工具
 RUN apt update && apt install -y --no-install-recommends netcat-openbsd \
