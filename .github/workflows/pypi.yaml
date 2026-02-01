@@ -21,22 +21,49 @@ jobs:
     - uses: actions/checkout@v4
       with:
         fetch-depth: 0
+        fetch-tags: true
         persist-credentials: false
+
+    - name: Fetch all tags
+      run: git fetch --tags --force
+
+    - name: Determine version
+      id: version
+      run: |
+        if [ -n "${{ inputs.version }}" ]; then
+          VERSION="${{ inputs.version }}"
+        elif [ "${{ github.event_name }}" = "release" ]; then
+          # Strip 'v' prefix from tag: v0.3.0 -> 0.3.0
+          VERSION="${GITHUB_REF_NAME#v}"
+        else
+          VERSION=$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//' || echo "0.0.0")
+        fi
+        echo "value=$VERSION" >> $GITHUB_OUTPUT
+        echo "Building version: $VERSION"
 
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: "3.x"
 
-    - name: Set version override
-      if: inputs.version
-      run: echo "SETUPTOOLS_SCM_PRETEND_VERSION=${{ inputs.version }}" >> $GITHUB_ENV
+    - name: Set version for build
+      run: echo "SETUPTOOLS_SCM_PRETEND_VERSION=${{ steps.version.outputs.value }}" >> $GITHUB_ENV
 
     - name: Install pypa/build
       run: python3 -m pip install build --user
 
     - name: Build a binary wheel and a source tarball
       run: python3 -m build
+
+    - name: Verify built version
+      run: |
+        ls -la dist/
+        WHEEL=$(ls dist/*.whl)
+        echo "Built wheel: $WHEEL"
+        if [[ "$WHEEL" != *"${{ steps.version.outputs.value }}"* ]]; then
+          echo "ERROR: Built version does not match expected version ${{ steps.version.outputs.value }}"
+          exit 1
+        fi
 
     - name: Store the distribution packages
       uses: actions/upload-artifact@v4
