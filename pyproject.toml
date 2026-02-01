@@ -1,6 +1,6 @@
 [project]
 name = "stock-data-mcp"
-version = "0.2.0"
+dynamic = ["version"]
 description = "MCP Server for stock and crypto with multi-source failover"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -26,8 +26,14 @@ Repository = "https://github.com/stockmcp/stock-data-mcp.git"
 stock-data-mcp = "stock_data_mcp:main"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "stock_data_mcp/_version.py"
 
 # -------------------------------
 # 新增部分，告诉 hatch 要打包的源码目录

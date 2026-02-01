@@ -2,12 +2,13 @@ name: Publish to PyPI
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (e.g. 0.3.0). Leave empty to use git tag."
+        required: false
+        type: string
   release:
     types: [published]
-  push:
-    branches: [main]
-    paths-ignore:
-      - .github/**
 
 env:
   PYPI_PKG_NAME: stock-data-mcp
@@ -19,12 +20,17 @@ jobs:
     steps:
     - uses: actions/checkout@v4
       with:
+        fetch-depth: 0
         persist-credentials: false
 
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: "3.x"
+
+    - name: Set version override
+      if: inputs.version
+      run: echo "SETUPTOOLS_SCM_PRETEND_VERSION=${{ inputs.version }}" >> $GITHUB_ENV
 
     - name: Install pypa/build
       run: python3 -m pip install build --user
@@ -40,7 +46,6 @@ jobs:
 
   publish-to-pypi:
     name: Publish Python 🐍 distribution 📦 to PyPI
-    if: startsWith(github.ref, 'refs/tags/')
     needs:
     - build
     runs-on: ubuntu-latest

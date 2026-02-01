@@ -12,6 +12,7 @@ from pydantic import Field
 from datetime import datetime, timedelta
 from starlette.middleware.cors import CORSMiddleware
 from .cache import CacheKey
+from ._version import __version__
 from .data_provider import (
     DataFetcherManager,
     to_chinese_columns,
@@ -20,7 +21,7 @@ from .data_provider import (
 _LOGGER = logging.getLogger(__name__)
 _LOGGER.setLevel(logging.INFO)
 
-mcp = FastMCP(name="stock-data-mcp", version="0.2.0")
+mcp = FastMCP(name="stock-data-mcp", version=__version__)
 
 # 全局数据获取管理器（支持多数据源自动故障转移）
 _data_manager = None
