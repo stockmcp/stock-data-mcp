@@ -127,6 +127,116 @@ def stock_info(
     return f"Not Found for {symbol}.{market}"
 
 
+def _fetch_hk_prices(symbol: str, start_date: str, period: str = "daily") -> pd.DataFrame | None:
+    """港股价格获取（带故障转移）: akshare → yfinance"""
+    import yfinance as yf
+
+    # 处理 Field 对象作为默认值的情况
+    if hasattr(period, 'default'):
+        period = period.default or "daily"
+
+    # 1. 优先尝试 akshare
+    try:
+        dfs = ak_cache(ak.stock_hk_hist, symbol=symbol, period=period, start_date=start_date, ttl=3600)
+        if dfs is not None and not dfs.empty:
+            _LOGGER.info(f"[港股] akshare 获取成功: {symbol}")
+            return dfs
+    except Exception as e:
+        _LOGGER.warning(f"[港股] akshare 获取失败 {symbol}: {e}")
+
+    # 2. 回退到 yfinance
+    try:
+        # 转换代码格式: 09988 → 9988.HK
+        yf_symbol = f"{symbol.lstrip('0').zfill(4)}.HK"
+        _LOGGER.info(f"[港股] 尝试 yfinance: {yf_symbol}")
+
+        # 转换日期格式
+        start_dt = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:]}" if len(start_date) == 8 else start_date
+
+        df = yf.download(yf_symbol, start=start_dt, progress=False, auto_adjust=True)
+        if df is not None and not df.empty:
+            df = df.reset_index()
+            # 处理 MultiIndex 列名（yfinance 可能返回多层列名）
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
+            df.rename(columns={
+                "Date": "日期", "Open": "开盘", "Close": "收盘",
+                "High": "最高", "Low": "最低", "Volume": "成交量"
+            }, inplace=True)
+            df["换手率"] = None
+            df["日期"] = pd.to_datetime(df["日期"]).dt.strftime("%Y-%m-%d")
+            _LOGGER.info(f"[港股] yfinance 获取成功: {symbol}")
+            return df
+    except Exception as e:
+        _LOGGER.warning(f"[港股] yfinance 获取失败 {symbol}: {e}")
+
+    return None
+
+
+def _fetch_us_prices(symbol: str, start_date: str, period: str = "daily") -> pd.DataFrame | None:
+    """美股价格获取（带故障转移）: akshare → yfinance → Alpha Vantage"""
+    import yfinance as yf
+
+    # 处理 Field 对象作为默认值的情况
+    if hasattr(period, 'default'):
+        period = period.default or "daily"
+
+    # 1. 优先尝试 akshare
+    try:
+        dfs = ak_cache(stock_us_daily, symbol=symbol, start_date=start_date, period=period, ttl=3600)
+        if dfs is not None and not dfs.empty:
+            _LOGGER.info(f"[美股] akshare 获取成功: {symbol}")
+            return dfs
+    except Exception as e:
+        _LOGGER.warning(f"[美股] akshare 获取失败 {symbol}: {e}")
+
+    # 2. 回退到 yfinance
+    try:
+        yf_symbol = symbol.upper()
+        _LOGGER.info(f"[美股] 尝试 yfinance: {yf_symbol}")
+
+        start_dt = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:]}" if len(start_date) == 8 else start_date
+
+        df = yf.download(yf_symbol, start=start_dt, progress=False, auto_adjust=True)
+        if df is not None and not df.empty:
+            df = df.reset_index()
+            # 处理 MultiIndex 列名（yfinance 可能返回多层列名）
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
+            df.rename(columns={
+                "Date": "日期", "Open": "开盘", "Close": "收盘",
+                "High": "最高", "Low": "最低", "Volume": "成交量"
+            }, inplace=True)
+            df["换手率"] = None
+            df["日期"] = pd.to_datetime(df["日期"]).dt.strftime("%Y-%m-%d")
+            _LOGGER.info(f"[美股] yfinance 获取成功: {symbol}")
+            return df
+    except Exception as e:
+        _LOGGER.warning(f"[美股] yfinance 获取失败 {symbol}: {e}")
+
+    # 3. 回退到 Alpha Vantage（如果配置了 API Key）
+    if ALPHA_VANTAGE_API_KEY:
+        try:
+            _LOGGER.info(f"[美股] 尝试 Alpha Vantage: {symbol}")
+            from .data_provider import AlphaVantageFetcher
+            av = AlphaVantageFetcher()
+            df = av._fetch_raw_data(symbol, start_date, datetime.now().strftime("%Y%m%d"))
+            if df is not None and not df.empty:
+                df = av._normalize_data(df, symbol)
+                # 转换为中文列名
+                df.rename(columns={
+                    "date": "日期", "open": "开盘", "close": "收盘",
+                    "high": "最高", "low": "最低", "volume": "成交量"
+                }, inplace=True)
+                df["换手率"] = None
+                _LOGGER.info(f"[美股] Alpha Vantage 获取成功: {symbol}")
+                return df
+        except Exception as e:
+            _LOGGER.warning(f"[美股] Alpha Vantage 获取失败 {symbol}: {e}")
+
+    return None
+
+
 @mcp.tool(
     title="获取股票历史价格",
     description="根据股票代码和市场获取股票历史价格及技术指标, 不支持加密货币。支持多数据源自动故障转移。",
@@ -156,17 +266,35 @@ def stock_prices(
         except Exception as e:
             _LOGGER.warning(f"多数据源获取失败，回退到原有逻辑: {e}")
 
-    # 回退到原有逻辑（港股、美股、ETF 等）
+    # 计算起始日期
     if period == "weekly":
         delta = {"weeks": limit + 62}
     else:
         delta = {"days": limit + 62}
     start_date = (datetime.now() - timedelta(**delta)).strftime("%Y%m%d")
+
+    # 港股：使用带故障转移的函数
+    if market == "hk":
+        dfs = _fetch_hk_prices(symbol, start_date, period)
+        if dfs is not None and not dfs.empty:
+            add_technical_indicators(dfs, dfs["收盘"], dfs["最低"], dfs["最高"], dfs.get("成交量"))
+            all_lines = dfs.to_csv(columns=STOCK_PRICE_COLUMNS, index=False, float_format="%.2f").strip().split("\n")
+            return "\n".join([all_lines[0], *all_lines[-limit:]])
+        return f"Not Found for {symbol}.{market}"
+
+    # 美股：使用带故障转移的函数
+    if market == "us":
+        dfs = _fetch_us_prices(symbol, start_date, period)
+        if dfs is not None and not dfs.empty:
+            add_technical_indicators(dfs, dfs["收盘"], dfs["最低"], dfs["最高"], dfs.get("成交量"))
+            all_lines = dfs.to_csv(columns=STOCK_PRICE_COLUMNS, index=False, float_format="%.2f").strip().split("\n")
+            return "\n".join([all_lines[0], *all_lines[-limit:]])
+        return f"Not Found for {symbol}.{market}"
+
+    # 其他市场（A股回退、ETF）
     markets = [
         ["sh", ak.stock_zh_a_hist, {}],
         ["sz", ak.stock_zh_a_hist, {}],
-        ["hk", ak.stock_hk_hist, {}],
-        ["us", stock_us_daily, {}],
         ["sh", fund_etf_hist_sina, {"market": "sh"}],
         ["sz", fund_etf_hist_sina, {"market": "sz"}],
     ]
@@ -253,6 +381,8 @@ def stock_indicators_a(
     symbol: str = field_symbol,
 ):
     dfs = ak_cache(ak.stock_financial_abstract_ths, symbol=symbol)
+    if dfs is None or dfs.empty:
+        return f"获取A股指标失败: {symbol}"
     keys = dfs.to_csv(index=False, float_format="%.3f").strip().split("\n")
     return "\n".join([keys[0], *keys[-15:]])
 
@@ -265,6 +395,8 @@ def stock_indicators_hk(
     symbol: str = field_symbol,
 ):
     dfs = ak_cache(ak.stock_financial_hk_analysis_indicator_em, symbol=symbol, indicator="报告期")
+    if dfs is None or dfs.empty:
+        return f"获取港股指标失败: {symbol}"
     keys = dfs.to_csv(index=False, float_format="%.3f").strip().split("\n")
     return "\n".join(keys[0:15])
 
@@ -277,6 +409,8 @@ def stock_indicators_us(
     symbol: str = field_symbol,
 ):
     dfs = ak_cache(ak.stock_financial_us_analysis_indicator_em, symbol=symbol, indicator="单季报")
+    if dfs is None or dfs.empty:
+        return f"获取美股指标失败: {symbol}"
     keys = dfs.to_csv(index=False, float_format="%.3f").strip().split("\n")
     return "\n".join(keys[0:15])
 
