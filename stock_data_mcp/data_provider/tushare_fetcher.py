@@ -13,6 +13,7 @@ import pandas as pd
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from .base import BaseFetcher, DataFetchError, RateLimitError
+from .types import UnifiedRealtimeQuote, RealtimeSource, safe_float
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -323,4 +324,56 @@ class TushareFetcher(BaseFetcher):
             return df
         except Exception as e:
             _LOGGER.warning(f"[{self.name}] 获取板块成分股失败: {e}")
+            return None
+
+    def get_realtime_quote(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
+        """获取实时行情"""
+        if not self._available or self._api is None:
+            return None
+
+        try:
+            self._check_rate_limit()
+            ts_code = self._convert_stock_code(stock_code)
+
+            # 使用已导入的 tushare 模块（__init__ 中已设置 token）
+            import tushare as ts
+            df = ts.realtime_quote(ts_code=ts_code)
+
+            if df is None or df.empty:
+                return None
+
+            row = df.iloc[0]
+
+            price = safe_float(row.get('PRICE'))
+            pre_close = safe_float(row.get('PRE_CLOSE'))
+
+            # 计算涨跌额和涨跌幅
+            change_amount = None
+            change_pct = None
+            if price is not None and pre_close is not None and pre_close != 0:
+                change_amount = round(price - pre_close, 2)
+                change_pct = round((price - pre_close) / pre_close * 100, 2)
+
+            # VOLUME 单位：股，转换为手（/100）以与其他数据源保持一致
+            volume_raw = safe_float(row.get('VOLUME'))
+            volume = volume_raw / 100 if volume_raw is not None else None
+
+            quote = UnifiedRealtimeQuote(
+                code=stock_code,
+                name=row.get('NAME', None),
+                source=RealtimeSource.TUSHARE,
+                price=price,
+                change_pct=change_pct,
+                change_amount=change_amount,
+                volume=volume,
+                amount=safe_float(row.get('AMOUNT')),
+                open_price=safe_float(row.get('OPEN')),
+                high=safe_float(row.get('HIGH')),
+                low=safe_float(row.get('LOW')),
+                pre_close=pre_close,
+            )
+
+            return quote
+        except Exception as e:
+            _LOGGER.warning(f"[{self.name}] 获取实时行情失败: {e}")
             return None

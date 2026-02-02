@@ -4,6 +4,7 @@
 
 import time
 import logging
+import threading
 from enum import Enum
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
@@ -50,6 +51,7 @@ def safe_int(val, default: Optional[int] = None) -> Optional[int]:
 
 class RealtimeSource(Enum):
     """实时行情数据源"""
+    TUSHARE = "tushare"
     EFINANCE = "efinance"
     AKSHARE_EM = "akshare_em"
     AKSHARE_SINA = "akshare_sina"
@@ -301,6 +303,7 @@ class CircuitBreaker:
 
 
 # 全局熔断器实例
+_circuit_breaker_lock = threading.Lock()
 _realtime_circuit_breaker: Optional[CircuitBreaker] = None
 _chip_circuit_breaker: Optional[CircuitBreaker] = None
 _daily_circuit_breaker: Optional[CircuitBreaker] = None
@@ -310,81 +313,58 @@ _billboard_circuit_breaker: Optional[CircuitBreaker] = None
 _us_financials_circuit_breaker: Optional[CircuitBreaker] = None
 
 
+def _get_or_create_circuit_breaker(
+    attr_name: str,
+    failure_threshold: int = 3,
+    cooldown_seconds: float = 300.0
+) -> CircuitBreaker:
+    """线程安全地获取或创建熔断器实例"""
+    current = globals().get(attr_name)
+    if current is None:
+        with _circuit_breaker_lock:
+            current = globals().get(attr_name)
+            if current is None:
+                current = CircuitBreaker(
+                    failure_threshold=failure_threshold,
+                    cooldown_seconds=cooldown_seconds,
+                )
+                globals()[attr_name] = current
+    return current
+
+
 def get_realtime_circuit_breaker() -> CircuitBreaker:
     """获取实时行情熔断器（5分钟冷却）"""
-    global _realtime_circuit_breaker
-    if _realtime_circuit_breaker is None:
-        _realtime_circuit_breaker = CircuitBreaker(
-            failure_threshold=3,
-            cooldown_seconds=300.0
-        )
-    return _realtime_circuit_breaker
+    return _get_or_create_circuit_breaker("_realtime_circuit_breaker", 3, 300.0)
 
 
 def get_chip_circuit_breaker() -> CircuitBreaker:
     """获取筹码分布熔断器（10分钟冷却）"""
-    global _chip_circuit_breaker
-    if _chip_circuit_breaker is None:
-        _chip_circuit_breaker = CircuitBreaker(
-            failure_threshold=2,
-            cooldown_seconds=600.0
-        )
-    return _chip_circuit_breaker
+    return _get_or_create_circuit_breaker("_chip_circuit_breaker", 2, 600.0)
 
 
 def get_daily_circuit_breaker() -> CircuitBreaker:
     """获取日线数据熔断器（5分钟冷却）"""
-    global _daily_circuit_breaker
-    if _daily_circuit_breaker is None:
-        _daily_circuit_breaker = CircuitBreaker(
-            failure_threshold=3,
-            cooldown_seconds=300.0
-        )
-    return _daily_circuit_breaker
+    return _get_or_create_circuit_breaker("_daily_circuit_breaker", 3, 300.0)
 
 
 def get_fund_flow_circuit_breaker() -> CircuitBreaker:
     """获取资金流向熔断器（5分钟冷却）"""
-    global _fund_flow_circuit_breaker
-    if _fund_flow_circuit_breaker is None:
-        _fund_flow_circuit_breaker = CircuitBreaker(
-            failure_threshold=3,
-            cooldown_seconds=300.0
-        )
-    return _fund_flow_circuit_breaker
+    return _get_or_create_circuit_breaker("_fund_flow_circuit_breaker", 3, 300.0)
 
 
 def get_board_circuit_breaker() -> CircuitBreaker:
     """获取板块数据熔断器（10分钟冷却）"""
-    global _board_circuit_breaker
-    if _board_circuit_breaker is None:
-        _board_circuit_breaker = CircuitBreaker(
-            failure_threshold=3,
-            cooldown_seconds=600.0
-        )
-    return _board_circuit_breaker
+    return _get_or_create_circuit_breaker("_board_circuit_breaker", 3, 600.0)
 
 
 def get_billboard_circuit_breaker() -> CircuitBreaker:
     """获取龙虎榜熔断器（5分钟冷却）"""
-    global _billboard_circuit_breaker
-    if _billboard_circuit_breaker is None:
-        _billboard_circuit_breaker = CircuitBreaker(
-            failure_threshold=3,
-            cooldown_seconds=300.0
-        )
-    return _billboard_circuit_breaker
+    return _get_or_create_circuit_breaker("_billboard_circuit_breaker", 3, 300.0)
 
 
 def get_us_financials_circuit_breaker() -> CircuitBreaker:
     """获取美股基本面熔断器（10分钟冷却，适应 API 限流）"""
-    global _us_financials_circuit_breaker
-    if _us_financials_circuit_breaker is None:
-        _us_financials_circuit_breaker = CircuitBreaker(
-            failure_threshold=3,
-            cooldown_seconds=600.0  # 10 分钟，适应 Alpha Vantage 限流
-        )
-    return _us_financials_circuit_breaker
+    return _get_or_create_circuit_breaker("_us_financials_circuit_breaker", 3, 600.0)
 
 
 # 标准列名定义

@@ -221,6 +221,7 @@ class DataFetcherManager:
         self._fetchers: List[BaseFetcher] = []
         self._realtime_cache: Dict[str, tuple[UnifiedRealtimeQuote, float]] = {}  # (quote, timestamp)
         self._realtime_cache_ttl: float = 60.0  # 1分钟缓存
+        self._realtime_cache_maxsize: int = 500  # 最多缓存500只股票
 
         if auto_init:
             self._init_default_fetchers()
@@ -277,6 +278,35 @@ class DataFetcherManager:
     def get_fetchers(self) -> List[BaseFetcher]:
         """获取所有数据源"""
         return self._fetchers.copy()
+
+    def _get_fetchers_for_realtime(self) -> List[BaseFetcher]:
+        """
+        获取实时行情数据源列表（按实时行情优先级）
+        Efinance（批量高效）> Tushare（单个查询）> Akshare
+        """
+        # 实时行情优先使用支持批量获取的数据源
+        priority_order = {
+            "EfinanceFetcher": 0,   # 批量获取全市场，缓存后查询快
+            "AkshareFetcher": 1,    # 支持多数据源
+            "TushareFetcher": 2,    # 单个查询
+        }
+        return sorted(
+            self._fetchers,
+            key=lambda f: priority_order.get(f.name, f.priority + 10)
+        )
+
+    def _evict_realtime_cache(self):
+        """清理过期和超量的实时行情缓存"""
+        now = time.time()
+        # 先清理过期条目
+        expired = [k for k, (_, ts) in self._realtime_cache.items() if now - ts >= self._realtime_cache_ttl]
+        for k in expired:
+            del self._realtime_cache[k]
+        # 如果仍超过上限，按时间戳淘汰最旧的
+        if len(self._realtime_cache) > self._realtime_cache_maxsize:
+            sorted_keys = sorted(self._realtime_cache, key=lambda k: self._realtime_cache[k][1])
+            for k in sorted_keys[:len(self._realtime_cache) - self._realtime_cache_maxsize]:
+                del self._realtime_cache[k]
 
     def get_daily_data(
         self,
@@ -341,7 +371,8 @@ class DataFetcherManager:
 
         circuit_breaker = get_realtime_circuit_breaker()
 
-        for fetcher in self._fetchers:
+        # 使用实时行情专用优先级（Efinance批量 > Akshare > Tushare单个）
+        for fetcher in self._get_fetchers_for_realtime():
             source_name = fetcher.name
 
             if not circuit_breaker.is_available(source_name):
@@ -352,6 +383,7 @@ class DataFetcherManager:
                 if quote is not None and quote.has_basic_data():
                     circuit_breaker.record_success(source_name)
                     self._realtime_cache[stock_code] = (quote, time.time())
+                    self._evict_realtime_cache()
                     return quote
             except Exception as e:
                 circuit_breaker.record_failure(source_name, str(e))
@@ -402,8 +434,8 @@ class DataFetcherManager:
         """
         result: Dict[str, UnifiedRealtimeQuote] = {}
 
-        # 尝试使用支持批量获取的数据源
-        for fetcher in self._fetchers:
+        # 使用实时行情专用优先级，优先尝试支持批量获取的数据源
+        for fetcher in self._get_fetchers_for_realtime():
             if hasattr(fetcher, 'get_batch_realtime_quotes'):
                 try:
                     batch_result = fetcher.get_batch_realtime_quotes(stock_codes)

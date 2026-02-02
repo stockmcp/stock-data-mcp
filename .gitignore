@@ -28,3 +28,8 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Local tests (not for upload)
+tests/
+pytest.ini
+.pytest_cache/

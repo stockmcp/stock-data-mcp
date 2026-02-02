@@ -18,6 +18,13 @@ dependencies = [
     "fastmcp>=2.0.0",
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0.0",
+    "pytest-timeout>=2.3.0",
+    "python-dotenv>=1.0.0",
+]
+
 [project.urls]
 Homepage = "https://github.com/stockmcp/stock-data-mcp"
 Repository = "https://github.com/stockmcp/stock-data-mcp.git"

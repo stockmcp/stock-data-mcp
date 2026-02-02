@@ -2,11 +2,13 @@ import os
 import time
 import json
 import logging
+import threading
 import akshare as ak
 import efinance as ef
 import argparse
 import requests
 import pandas as pd
+import numpy as np
 from fastmcp import FastMCP
 from pydantic import Field
 from datetime import datetime, timedelta
@@ -19,12 +21,15 @@ from .data_provider import (
 )
 
 _LOGGER = logging.getLogger(__name__)
-_LOGGER.setLevel(logging.INFO)
+# 日志级别可通过环境变量配置
+_LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+_LOGGER.setLevel(getattr(logging, _LOG_LEVEL, logging.INFO))
 
 mcp = FastMCP(name="stock-data-mcp", version=__version__)
 
 # 全局数据获取管理器（支持多数据源自动故障转移）
 _data_manager = None
+_data_manager_lock = threading.Lock()
 
 # 技术指标列定义（复用于股票和加密货币K线输出）
 MA_COLUMNS = ["MA5", "MA10", "MA20", "MA30", "MA60"]
@@ -33,10 +38,12 @@ STOCK_PRICE_COLUMNS = ["日期", "开盘", "收盘", "最高", "最低", "成交
 CRYPTO_PRICE_COLUMNS = ["时间", "开盘", "收盘", "最高", "最低", "成交量", "成交额"] + MA_COLUMNS + INDICATOR_COLUMNS
 
 def get_data_manager() -> DataFetcherManager:
-    """获取全局数据管理器（延迟初始化）"""
+    """获取全局数据管理器（延迟初始化，线程安全）"""
     global _data_manager
     if _data_manager is None:
-        _data_manager = DataFetcherManager()
+        with _data_manager_lock:
+            if _data_manager is None:
+                _data_manager = DataFetcherManager()
     return _data_manager
 
 field_symbol = Field(description="股票代码")
@@ -49,17 +56,27 @@ USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10) AppleWebKit/537.36 Chro
 
 def _http_get_with_retry(url, params=None, headers=None, max_retries=3, timeout=20):
     """带重试的 HTTP GET 请求"""
+    return _http_request_with_retry("GET", url, params=params, headers=headers, max_retries=max_retries, timeout=timeout)
+
+
+def _http_post_with_retry(url, json=None, headers=None, max_retries=3, timeout=20):
+    """带重试的 HTTP POST 请求"""
+    return _http_request_with_retry("POST", url, json=json, headers=headers, max_retries=max_retries, timeout=timeout)
+
+
+def _http_request_with_retry(method, url, params=None, json=None, headers=None, max_retries=3, timeout=20):
+    """带重试的 HTTP 请求"""
     if headers is None:
         headers = {"User-Agent": USER_AGENT}
     last_error = None
     for i in range(max_retries):
         try:
-            res = requests.get(url, params=params, headers=headers, timeout=timeout)
+            res = requests.request(method, url, params=params, json=json, headers=headers, timeout=timeout)
             if res.status_code == 200:
                 return res
         except Exception as e:
             last_error = e
-            _LOGGER.warning(f"HTTP GET 第{i+1}次失败 [{url}]: {e}")
+            _LOGGER.warning(f"HTTP {method} 第{i+1}次失败 [{url}]: {e}")
             if i < max_retries - 1:
                 time.sleep(1 * (i + 1))
     if last_error:
@@ -307,12 +324,12 @@ def stock_zt_pool_em(
     if not date:
         date = recent_trade_date().strftime("%Y%m%d")
     dfs = ak_cache(ak.stock_zt_pool_em, date=date, ttl=1200)
+    if dfs is None or dfs.empty:
+        return "获取涨停股池数据失败"
     cnt = len(dfs)
-    try:
-        dfs.drop(columns=["序号", "流通市值", "总市值"], inplace=True)
-    except Exception:
-        pass
-    dfs.sort_values("成交额", ascending=False, inplace=True)
+    dfs.drop(columns=["序号", "流通市值", "总市值"], inplace=True, errors='ignore')
+    if "成交额" in dfs.columns:
+        dfs.sort_values("成交额", ascending=False, inplace=True)
     dfs = dfs.head(int(limit))
     desc = f"共{cnt}只涨停股\n"
     return desc + dfs.to_csv(index=False, float_format="%.2f").strip()
@@ -329,11 +346,11 @@ def stock_zt_pool_strong_em(
     if not date:
         date = recent_trade_date().strftime("%Y%m%d")
     dfs = ak_cache(ak.stock_zt_pool_strong_em, date=date, ttl=1200)
-    try:
-        dfs.drop(columns=["序号", "流通市值", "总市值"], inplace=True)
-    except Exception:
-        pass
-    dfs.sort_values("成交额", ascending=False, inplace=True)
+    if dfs is None or dfs.empty:
+        return "获取强势股池数据失败"
+    dfs.drop(columns=["序号", "流通市值", "总市值"], inplace=True, errors='ignore')
+    if "成交额" in dfs.columns:
+        dfs.sort_values("成交额", ascending=False, inplace=True)
     dfs = dfs.head(int(limit))
     return dfs.to_csv(index=False, float_format="%.2f").strip()
 
@@ -374,11 +391,9 @@ def stock_sector_fund_flow_rank(
     dfs = ak_cache(ak.stock_sector_fund_flow_rank, indicator=days, sector_type=cate, ttl=1200)
     if dfs is None:
         return "获取数据失败"
-    try:
+    if "今日涨跌幅" in dfs.columns:
         dfs.sort_values("今日涨跌幅", ascending=False, inplace=True)
-        dfs.drop(columns=["序号"], inplace=True)
-    except Exception:
-        pass
+    dfs.drop(columns=["序号"], inplace=True, errors='ignore')
     try:
         dfs = pd.concat([dfs.head(20), dfs.tail(20)])
         return dfs.to_csv(index=False, float_format="%.2f").strip()
@@ -447,39 +462,28 @@ def okx_prices(
     if not bar.endswith("m"):
         bar = bar.upper()
 
-    # 重试机制
-    max_retries = 3
-    last_error = None
-    for i in range(max_retries):
-        try:
-            res = requests.get(
-                f"{OKX_BASE_URL}/api/v5/market/candles",
-                params={
-                    "instId": instId,
-                    "bar": bar,
-                    "limit": max(300, limit + 62),
-                },
-                headers={"User-Agent": USER_AGENT},
-                timeout=20,
-            )
-            data = res.json() or {}
-            dfs = pd.DataFrame(data.get("data", []))
-            if not dfs.empty:
-                break
-        except Exception as e:
-            last_error = e
-            _LOGGER.warning(f"OKX API 第{i+1}次尝试失败: {e}")
-            if i < max_retries - 1:
-                time.sleep(1 * (i + 1))
-    else:
-        return f"OKX API 请求失败: {last_error}"
+    try:
+        res = _http_get_with_retry(
+            f"{OKX_BASE_URL}/api/v5/market/candles",
+            params={
+                "instId": instId,
+                "bar": bar,
+                "limit": max(300, limit + 62),
+            },
+        )
+        if res is None:
+            return f"OKX API 请求失败"
+        data = res.json() or {}
+        dfs = pd.DataFrame(data.get("data", []))
+    except Exception as e:
+        return f"OKX API 请求失败: {e}"
 
     if dfs.empty:
         return f"未获取到 {instId} 数据"
 
     dfs.columns = ["时间", "开盘", "最高", "最低", "收盘", "成交量", "成交额", "成交额USDT", "K线已完结"]
     dfs.sort_values("时间", inplace=True)
-    dfs["时间"] = pd.to_datetime(dfs["时间"], errors="coerce", unit="ms")
+    dfs["时间"] = pd.to_datetime(pd.to_numeric(dfs["时间"], errors="coerce"), unit="ms")
     dfs["开盘"] = pd.to_numeric(dfs["开盘"], errors="coerce")
     dfs["最高"] = pd.to_numeric(dfs["最高"], errors="coerce")
     dfs["最低"] = pd.to_numeric(dfs["最低"], errors="coerce")
@@ -514,7 +518,7 @@ def okx_loan_ratios(
     if dfs.empty:
         return f"未获取到 {symbol} 多空比数据"
     dfs.columns = ["时间", "多空比"]
-    dfs["时间"] = pd.to_datetime(dfs["时间"], errors="coerce", unit="ms")
+    dfs["时间"] = pd.to_datetime(pd.to_numeric(dfs["时间"], errors="coerce"), unit="ms")
     dfs["多空比"] = pd.to_numeric(dfs["多空比"], errors="coerce")
     return dfs.to_csv(index=False, float_format="%.2f").strip()
 
@@ -543,7 +547,7 @@ def okx_taker_volume(
     if dfs.empty:
         return f"未获取到 {symbol} 主动买卖数据"
     dfs.columns = ["时间", "卖出量", "买入量"]
-    dfs["时间"] = pd.to_datetime(dfs["时间"], errors="coerce", unit="ms")
+    dfs["时间"] = pd.to_datetime(pd.to_numeric(dfs["时间"], errors="coerce"), unit="ms")
     dfs["卖出量"] = pd.to_numeric(dfs["卖出量"], errors="coerce")
     dfs["买入量"] = pd.to_numeric(dfs["买入量"], errors="coerce")
     return dfs.to_csv(index=False, float_format="%.2f").strip()
@@ -556,39 +560,25 @@ def okx_taker_volume(
 def binance_ai_report(
     symbol: str = Field("BTC", description="加密货币币种，格式: BTC 或 ETH"),
 ):
-    # 重试机制
-    max_retries = 3
-    last_error = None
-    res = None
-
-    for i in range(max_retries):
-        try:
-            res = requests.post(
-                f"{BINANCE_BASE_URL}/bapi/bigdata/v3/friendly/bigdata/search/ai-report/report",
-                json={
-                    'lang': 'zh-CN',
-                    'token': symbol,
-                    'symbol': f'{symbol}USDT',
-                    'product': 'web-spot',
-                    'timestamp': int(time.time() * 1000),
-                    'translateToken': None,
-                },
-                headers={
-                    'User-Agent': USER_AGENT,
-                    'Referer': f'https://www.binance.com/zh-CN/trade/{symbol}_USDT?type=spot',
-                    'lang': 'zh-CN',
-                },
-                timeout=20,
-            )
-            if res.status_code == 200:
-                break
-        except Exception as e:
-            last_error = e
-            _LOGGER.warning(f"Binance API 第{i+1}次尝试失败: {e}")
-            if i < max_retries - 1:
-                time.sleep(1 * (i + 1))
-    else:
-        return f"Binance API 请求失败: {last_error}"
+    try:
+        res = _http_post_with_retry(
+            f"{BINANCE_BASE_URL}/bapi/bigdata/v3/friendly/bigdata/search/ai-report/report",
+            json={
+                'lang': 'zh-CN',
+                'token': symbol,
+                'symbol': f'{symbol}USDT',
+                'product': 'web-spot',
+                'timestamp': int(time.time() * 1000),
+                'translateToken': None,
+            },
+            headers={
+                'User-Agent': USER_AGENT,
+                'Referer': f'https://www.binance.com/zh-CN/trade/{symbol}_USDT?type=spot',
+                'lang': 'zh-CN',
+            },
+        )
+    except Exception as e:
+        return f"Binance API 请求失败: {e}"
 
     if res is None:
         return f"未获取到 {symbol} 分析报告"
@@ -950,10 +940,7 @@ def stock_board_cons(
 
         source = dfs.attrs.get('source', '-')
         dfs = dfs.head(int(limit))
-        try:
-            dfs = dfs.drop(columns=["序号"])
-        except Exception:
-            pass
+        dfs = dfs.drop(columns=["序号"], errors='ignore')
 
         lines = [f"# {board_name} 成分股\n", f"数据来源: {source}\n"]
         lines.append(dfs.to_csv(index=False, float_format="%.2f").strip())
@@ -1021,7 +1008,33 @@ def _fetch_board_cons_direct(board_name: str, board_type: str) -> pd.DataFrame |
     return None
 
 
+def _search_us_stock_fast(symbol: str) -> pd.Series | None:
+    """使用 yfinance 快速验证美股代码，避免遍历全部数据"""
+    import yfinance as yf
+    try:
+        symbol = symbol.upper()
+        ticker = yf.Ticker(symbol)
+        info = ticker.info
+        # 验证是否为有效股票（检查关键字段）
+        if info and info.get("symbol") and info.get("shortName"):
+            return pd.Series({
+                "symbol": info.get("symbol", symbol),
+                "name": info.get("shortName", ""),
+                "cname": info.get("longName", info.get("shortName", "")),
+                "market": "us",
+            })
+    except Exception as e:
+        _LOGGER.debug(f"yfinance 快速搜索失败 [{symbol}]: {e}")
+    return None
+
+
 def ak_search(symbol=None, keyword=None, market=None):
+    # 美股快速路径：使用 yfinance 验证，避免遍历 843 页数据
+    if market == "us" and (symbol or keyword):
+        us_result = _search_us_stock_fast(symbol or keyword)
+        if us_result is not None:
+            return us_result
+
     markets = [
         ["sh", ak.stock_info_a_code_name, "code", "name"],
         ["sh", ak.stock_info_sh_name_code, "证券代码", "证券简称"],
@@ -1183,17 +1196,11 @@ def add_technical_indicators(df, clos, lows, high, volume=None):
     df["BOLL.U"] = df["BOLL.M"] + 2 * std
     df["BOLL.L"] = df["BOLL.M"] - 2 * std
 
-    # 计算OBV（能量潮指标）
+    # 计算OBV（能量潮指标）- 向量化实现
     if volume is not None:
-        obv = [0]
-        for i in range(1, len(clos)):
-            if clos.iloc[i] > clos.iloc[i-1]:
-                obv.append(obv[-1] + volume.iloc[i])
-            elif clos.iloc[i] < clos.iloc[i-1]:
-                obv.append(obv[-1] - volume.iloc[i])
-            else:
-                obv.append(obv[-1])
-        df["OBV"] = obv
+        price_diff = clos.diff()
+        direction = np.sign(price_diff).fillna(0)
+        df["OBV"] = (direction * volume).fillna(0).cumsum()
 
     # 计算ATR（真实波幅）
     tr1 = high - lows

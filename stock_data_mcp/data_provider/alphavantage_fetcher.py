@@ -531,7 +531,10 @@ class AlphaVantageFetcher(BaseFetcher):
             source = item.get("source", "")
             time_published = item.get("time_published", "")
             overall_sentiment = item.get("overall_sentiment_label", "")
-            sentiment_score = item.get("overall_sentiment_score", 0)
+            try:
+                sentiment_score = float(item.get("overall_sentiment_score", 0))
+            except (ValueError, TypeError):
+                sentiment_score = 0.0
 
             # 格式化时间
             if time_published:
@@ -555,8 +558,14 @@ class AlphaVantageFetcher(BaseFetcher):
                 lines.append("- 相关股票:")
                 for ts in ticker_sentiments[:3]:
                     ticker = ts.get("ticker", "")
-                    relevance = ts.get("relevance_score", 0)
-                    sent_score = ts.get("ticker_sentiment_score", 0)
+                    try:
+                        relevance = float(ts.get("relevance_score", 0))
+                    except (ValueError, TypeError):
+                        relevance = 0.0
+                    try:
+                        sent_score = float(ts.get("ticker_sentiment_score", 0))
+                    except (ValueError, TypeError):
+                        sent_score = 0.0
                     sent_label = ts.get("ticker_sentiment_label", "")
                     lines.append(f"  - {ticker}: {sent_label} ({sent_score:.3f}), 相关度: {relevance:.3f}")
                 lines.append("")
