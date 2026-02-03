@@ -24,8 +24,8 @@ class TushareFetcher(BaseFetcher):
     name = "TushareFetcher"
     priority = 0  # A 股首选（需配置 token）
 
-    # 限流配置：免费版 80次/分钟
-    RATE_LIMIT = 80
+    # 限流配置：免费版 50次/分钟
+    RATE_LIMIT = 50
     RATE_WINDOW = 60  # 秒
 
     def __init__(self):

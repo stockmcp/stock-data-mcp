@@ -338,14 +338,21 @@ def stock_news(
     symbol: str = Field(description="股票代码/加密货币符号"),
     limit: int = Field(15, description="返回数量(int)", strict=False),
 ):
-    news = list(dict.fromkeys([
-        v["新闻内容"]
-        for v in ak_cache(stock_news_em, symbol=symbol, ttl=3600).to_dict(orient="records")
-        if isinstance(v, dict)
-    ]))
-    if news:
-        return "\n".join(news[0:limit])
-    return f"Not Found for {symbol}"
+    try:
+        result = ak_cache(stock_news_em, symbol=symbol, ttl=3600)
+        if result is None or (hasattr(result, 'empty') and result.empty):
+            return f"未找到 {symbol} 相关新闻"
+        news = list(dict.fromkeys([
+            v["新闻内容"]
+            for v in result.to_dict(orient="records")
+            if isinstance(v, dict)
+        ]))
+        if news:
+            return "\n".join(news[0:limit])
+        return f"未找到 {symbol} 相关新闻"
+    except Exception as e:
+        _LOGGER.warning(f"获取新闻失败: {e}")
+        return f"获取 {symbol} 新闻失败: {e}"
 
 def stock_news_em(symbol, limit=20):
     cbk = "jQuery351013927587392975826_1763361926020"
@@ -522,17 +529,19 @@ def stock_sector_fund_flow_rank(
     days: str = Field("今日", description="天数，仅支持: {'今日','5日','10日'}，如果需要获取今日数据，请确保是交易日"),
     cate: str = Field("行业资金流", description="仅支持: {'行业资金流','概念资金流','地域资金流'}"),
 ):
-    dfs = ak_cache(ak.stock_sector_fund_flow_rank, indicator=days, sector_type=cate, ttl=1200)
-    if dfs is None:
-        return "获取数据失败"
-    if "今日涨跌幅" in dfs.columns:
-        dfs.sort_values("今日涨跌幅", ascending=False, inplace=True)
-    dfs.drop(columns=["序号"], inplace=True, errors='ignore')
     try:
+        dfs = ak_cache(ak.stock_sector_fund_flow_rank, indicator=days, sector_type=cate, ttl=1200)
+        if dfs is None or (hasattr(dfs, 'empty') and dfs.empty):
+            hint = "（提示：如选择'今日'，请确保当前为交易时段且已开盘）" if days == "今日" else ""
+            return f"获取{cate}数据失败{hint}"
+        if "今日涨跌幅" in dfs.columns:
+            dfs.sort_values("今日涨跌幅", ascending=False, inplace=True)
+        dfs.drop(columns=["序号"], inplace=True, errors='ignore')
         dfs = pd.concat([dfs.head(20), dfs.tail(20)])
         return dfs.to_csv(index=False, float_format="%.2f").strip()
     except Exception as exc:
-        return str(exc)
+        _LOGGER.warning(f"获取板块资金流失败: {exc}")
+        return f"获取{cate}数据失败: {exc}"
 
 
 @mcp.tool(
@@ -808,11 +817,15 @@ def stock_realtime(
 def stock_chip(
     symbol: str = field_symbol,
 ):
+    # ETF/LOF/基金等产品不支持筹码分布
+    if symbol.startswith(('51', '15', '16', '50', '52', '56', '58', '11', '12')):
+        return f"{symbol} 是ETF/LOF/基金/可转债等产品，不支持筹码分布查询。筹码分布仅适用于普通A股。"
+
     try:
         manager = get_data_manager()
         chip = manager.get_chip_distribution(symbol)
         if chip is None:
-            return f"Not Found for {symbol}"
+            return f"未找到 {symbol} 的筹码分布数据，请确认是有效的A股代码"
 
         # 格式化输出（Markdown）
         lines = [
