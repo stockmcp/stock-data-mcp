@@ -190,8 +190,13 @@ class EfinanceFetcher(BaseFetcher):
             return False
 
     def get_realtime_quote(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
-        """获取实时行情"""
+        """获取实时行情（仅支持A股个股，不支持ETF和港股）"""
         if not self._available:
+            return None
+
+        # ETF 不支持，直接返回 None 让其他数据源处理
+        if is_etf_code(stock_code):
+            _LOGGER.debug(f"[{self.name}] ETF {stock_code} 不支持实时行情，跳过")
             return None
 
         # 检查缓存
@@ -210,22 +215,28 @@ class EfinanceFetcher(BaseFetcher):
         self,
         stock_codes: List[str]
     ) -> Dict[str, UnifiedRealtimeQuote]:
-        """批量获取实时行情"""
+        """批量获取实时行情（仅支持A股个股）"""
         if not self._available:
+            return {}
+
+        # 过滤掉 ETF，只处理 A 股个股
+        a_stock_codes = [code for code in stock_codes if not is_etf_code(code)]
+        if not a_stock_codes:
+            _LOGGER.debug(f"[{self.name}] 批量查询中无A股个股，跳过")
             return {}
 
         # 先尝试从缓存获取
         if time.time() - self._realtime_cache_time < self._cache_ttl:
             result = {}
-            for code in stock_codes:
+            for code in a_stock_codes:
                 if code in self._realtime_cache:
                     result[code] = self._realtime_cache[code]
-            if len(result) == len(stock_codes):
+            if len(result) == len(a_stock_codes):
                 return result
 
         # 刷新缓存
         if self._refresh_realtime_cache():
-            return {code: self._realtime_cache[code] for code in stock_codes if code in self._realtime_cache}
+            return {code: self._realtime_cache[code] for code in a_stock_codes if code in self._realtime_cache}
         return {}
 
     def get_base_info(self, stock_code: str) -> Optional[Dict]:

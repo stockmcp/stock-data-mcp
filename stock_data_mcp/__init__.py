@@ -18,6 +18,8 @@ from ._version import __version__
 from .data_provider import (
     DataFetcherManager,
     to_chinese_columns,
+    StockType,
+    validate_stock_type,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -773,10 +775,13 @@ def stock_realtime(
     market: str = Field("sh", description="股票市场，仅支持: sh(上证), sz(深证), hk(港股)"),
 ):
     try:
+        # 综合校验股票类型：结合用户指定的 market 和自动检测
+        stock_type, validated_market = validate_stock_type(symbol, market)
+
         manager = get_data_manager()
-        quote = manager.get_realtime_quote(symbol)
+        quote = manager.get_realtime_quote(symbol, stock_type=stock_type)
         if quote is None:
-            return f"Not Found for {symbol}.{market}"
+            return f"Not Found for {symbol}.{validated_market}"
 
         # 格式化输出（Markdown）
         lines = [

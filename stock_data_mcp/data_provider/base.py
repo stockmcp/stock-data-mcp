@@ -16,6 +16,7 @@ from .types import (
     STANDARD_COLUMNS,
     UnifiedRealtimeQuote,
     ChipDistribution,
+    StockType,
     get_daily_circuit_breaker,
     get_realtime_circuit_breaker,
     get_chip_circuit_breaker,
@@ -279,17 +280,42 @@ class DataFetcherManager:
         """获取所有数据源"""
         return self._fetchers.copy()
 
-    def _get_fetchers_for_realtime(self) -> List[BaseFetcher]:
+    def _get_fetchers_for_realtime(self, stock_type: Optional[StockType] = None) -> List[BaseFetcher]:
         """
         获取实时行情数据源列表（按实时行情优先级）
-        Efinance（批量高效）> Tushare（单个查询）> Akshare
+
+        Args:
+            stock_type: 股票类型，用于优化数据源选择
+
+        Returns:
+            按优先级排序的 fetcher 列表
         """
-        # 实时行情优先使用支持批量获取的数据源
-        priority_order = {
-            "EfinanceFetcher": 0,   # 批量获取全市场，缓存后查询快
-            "AkshareFetcher": 1,    # 支持多数据源
-            "TushareFetcher": 2,    # 单个查询
-        }
+        # 根据股票类型调整优先级
+        if stock_type == StockType.HK:
+            # 港股：只有 AkshareFetcher 支持
+            priority_order = {
+                "AkshareFetcher": 0,
+            }
+        elif stock_type == StockType.ETF:
+            # ETF：Akshare 支持 fund_etf_spot_em，Efinance 不支持
+            priority_order = {
+                "AkshareFetcher": 0,
+                "EfinanceFetcher": 10,  # 降低优先级，因为不支持 ETF
+                "TushareFetcher": 10,
+            }
+        elif stock_type == StockType.US:
+            # 美股：暂无实时行情支持
+            priority_order = {
+                "YfinanceFetcher": 0,
+                "AlphaVantageFetcher": 1,
+            }
+        else:
+            # A股个股：默认优先级
+            priority_order = {
+                "EfinanceFetcher": 0,   # 批量获取全市场，缓存后查询快
+                "AkshareFetcher": 1,    # 支持多数据源
+                "TushareFetcher": 2,    # 单个查询
+            }
         return sorted(
             self._fetchers,
             key=lambda f: priority_order.get(f.name, f.priority + 10)
@@ -353,12 +379,17 @@ class DataFetcherManager:
         _LOGGER.error(f"所有数据源均无法获取 {stock_code} 数据")
         return None
 
-    def get_realtime_quote(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
+    def get_realtime_quote(
+        self,
+        stock_code: str,
+        stock_type: Optional[StockType] = None
+    ) -> Optional[UnifiedRealtimeQuote]:
         """
         获取实时行情，自动故障转移
 
         Args:
             stock_code: 股票代码
+            stock_type: 股票类型（可选），用于优化数据源选择
 
         Returns:
             UnifiedRealtimeQuote 或 None
@@ -371,8 +402,8 @@ class DataFetcherManager:
 
         circuit_breaker = get_realtime_circuit_breaker()
 
-        # 使用实时行情专用优先级（Efinance批量 > Akshare > Tushare单个）
-        for fetcher in self._get_fetchers_for_realtime():
+        # 使用实时行情专用优先级，根据股票类型优化
+        for fetcher in self._get_fetchers_for_realtime(stock_type):
             source_name = fetcher.name
 
             if not circuit_breaker.is_available(source_name):
@@ -422,20 +453,28 @@ class DataFetcherManager:
 
         return None
 
-    def prefetch_realtime_quotes(self, stock_codes: List[str]) -> Dict[str, UnifiedRealtimeQuote]:
+    def prefetch_realtime_quotes(
+        self,
+        stock_codes: List[str],
+        stock_type: Optional[StockType] = None
+    ) -> Dict[str, UnifiedRealtimeQuote]:
         """
         批量预取实时行情
 
         Args:
             stock_codes: 股票代码列表
+            stock_type: 股票类型（可选），如果为None则自动检测
 
         Returns:
             股票代码 -> UnifiedRealtimeQuote 的映射
         """
+        from .types import detect_stock_type
+
         result: Dict[str, UnifiedRealtimeQuote] = {}
 
+        # 如果指定了 stock_type，使用该类型的优先数据源
         # 使用实时行情专用优先级，优先尝试支持批量获取的数据源
-        for fetcher in self._get_fetchers_for_realtime():
+        for fetcher in self._get_fetchers_for_realtime(stock_type):
             if hasattr(fetcher, 'get_batch_realtime_quotes'):
                 try:
                     batch_result = fetcher.get_batch_realtime_quotes(stock_codes)
@@ -450,9 +489,10 @@ class DataFetcherManager:
                     _LOGGER.warning(f"[{fetcher.name}] 批量获取实时行情失败: {e}")
                     continue
 
-        # 回退到逐个获取
+        # 回退到逐个获取，自动检测每个代码的类型
         for code in stock_codes:
-            quote = self.get_realtime_quote(code)
+            code_type = stock_type or detect_stock_type(code)
+            quote = self.get_realtime_quote(code, stock_type=code_type)
             if quote:
                 result[code] = quote
 

@@ -25,6 +25,7 @@ from .types import (
     RealtimeSource,
     CircuitBreaker,
     CircuitBreakerState,
+    StockType,
     # 工具函数
     safe_float,
     safe_int,
@@ -33,6 +34,9 @@ from .types import (
     is_etf_code,
     is_hk_code,
     is_us_code,
+    is_a_stock_code,
+    detect_stock_type,
+    validate_stock_type,
     # 常量
     STANDARD_COLUMNS,
     COLUMN_MAPPING_TO_CN,
@@ -79,6 +83,7 @@ __all__ = [
     "RealtimeSource",
     "CircuitBreaker",
     "CircuitBreakerState",
+    "StockType",
     # 异常
     "DataFetchError",
     "RateLimitError",
@@ -100,6 +105,9 @@ __all__ = [
     "is_etf_code",
     "is_hk_code",
     "is_us_code",
+    "is_a_stock_code",
+    "detect_stock_type",
+    "validate_stock_type",
     # 常量
     "STANDARD_COLUMNS",
     "COLUMN_MAPPING_TO_CN",

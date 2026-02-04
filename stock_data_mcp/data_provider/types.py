@@ -430,3 +430,97 @@ def is_us_code(stock_code: str) -> bool:
     # 美股代码通常是1-5个大写字母，可能带有后缀如 .O .N
     code = stock_code.upper().split('.')[0]
     return len(code) <= 5 and code.isalpha()
+
+
+def is_a_stock_code(stock_code: str) -> bool:
+    """判断是否为A股代码（含ETF）"""
+    code = stock_code.lstrip('0')
+    if len(code) != 6 or not code.isdigit():
+        return False
+    prefix = code[:2]
+    # 上交所: 60, 68 (科创板)
+    # 深交所: 00, 30 (创业板)
+    # ETF: 51, 52, 56, 58, 15, 16, 18
+    # 可转债: 11, 12
+    a_stock_prefixes = ('60', '68', '00', '30', '51', '52', '56', '58', '15', '16', '18', '11', '12')
+    return prefix in a_stock_prefixes
+
+
+class StockType(Enum):
+    """股票类型枚举"""
+    A_STOCK = "a"       # A股个股
+    ETF = "etf"         # ETF基金
+    HK = "hk"           # 港股
+    US = "us"           # 美股
+    UNKNOWN = "unknown"
+
+
+def detect_stock_type(stock_code: str) -> StockType:
+    """自动检测股票类型"""
+    if is_hk_code(stock_code):
+        return StockType.HK
+    if is_us_code(stock_code):
+        return StockType.US
+    if is_etf_code(stock_code):
+        return StockType.ETF
+    if is_a_stock_code(stock_code):
+        return StockType.A_STOCK
+    return StockType.UNKNOWN
+
+
+def validate_stock_type(stock_code: str, user_market: str) -> tuple[StockType, str]:
+    """
+    综合校验股票类型：结合用户传入的 market 和自动检测结果
+
+    Args:
+        stock_code: 股票代码
+        user_market: 用户传入的市场类型 (sh/sz/hk/us)
+
+    Returns:
+        (StockType, market_str): 最终确定的股票类型和市场字符串
+    """
+    detected_type = detect_stock_type(stock_code)
+
+    # 将用户市场映射到 StockType
+    market_to_type = {
+        'sh': StockType.A_STOCK,
+        'sz': StockType.A_STOCK,
+        'hk': StockType.HK,
+        'us': StockType.US,
+    }
+    user_type = market_to_type.get(user_market.lower(), StockType.UNKNOWN)
+
+    # A股市场需要区分 ETF 和个股
+    if user_type == StockType.A_STOCK and detected_type == StockType.ETF:
+        # 用户指定 A股市场，检测为 ETF，这是合理的（ETF 也在 A股市场交易）
+        final_type = StockType.ETF
+        final_market = user_market
+    elif detected_type == StockType.UNKNOWN:
+        # 无法自动检测时，信任用户输入
+        _LOGGER.warning(
+            f"无法自动检测股票类型: code={stock_code}, 使用用户指定的 market={user_market}"
+        )
+        final_type = user_type
+        final_market = user_market
+    elif user_type != detected_type and user_type != StockType.UNKNOWN:
+        # 用户指定的市场与检测结果不一致
+        _LOGGER.warning(
+            f"股票类型不一致: code={stock_code}, user_market={user_market}({user_type.value}), "
+            f"detected={detected_type.value}, 优先使用检测结果"
+        )
+        final_type = detected_type
+        # 根据检测结果修正市场
+        if detected_type == StockType.HK:
+            final_market = 'hk'
+        elif detected_type == StockType.US:
+            final_market = 'us'
+        elif detected_type in (StockType.A_STOCK, StockType.ETF):
+            # 保持用户的 sh/sz 选择，或默认 sh
+            final_market = user_market if user_market in ('sh', 'sz') else 'sh'
+        else:
+            final_market = user_market
+    else:
+        final_type = detected_type
+        final_market = user_market
+
+    return final_type, final_market

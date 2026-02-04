@@ -362,6 +362,141 @@ class AkshareFetcher(BaseFetcher):
             _LOGGER.warning(f"[{self.name}] 港股实时行情获取失败: {e}")
             return None
 
+    def get_batch_realtime_quotes(
+        self,
+        stock_codes: List[str]
+    ) -> Dict[str, UnifiedRealtimeQuote]:
+        """
+        批量获取实时行情，按类型分组后批量查询
+
+        Args:
+            stock_codes: 股票代码列表
+
+        Returns:
+            股票代码 -> UnifiedRealtimeQuote 的映射
+        """
+        result: Dict[str, UnifiedRealtimeQuote] = {}
+
+        # 先检查缓存
+        if time.time() - self._realtime_cache_time < self._cache_ttl:
+            uncached = []
+            for code in stock_codes:
+                cache_key = f"{code}_em"
+                if cache_key in self._realtime_cache:
+                    result[code] = self._realtime_cache[cache_key]
+                else:
+                    uncached.append(code)
+            if not uncached:
+                return result
+        else:
+            uncached = list(stock_codes)
+
+        # 按类型分组
+        etf_codes = [c for c in uncached if is_etf_code(c)]
+        hk_codes = [c for c in uncached if is_hk_code(c)]
+        a_codes = [c for c in uncached if not is_etf_code(c) and not is_hk_code(c)]
+
+        # 批量获取 ETF
+        if etf_codes:
+            try:
+                self.random_sleep(0.5, 1.5)
+                df = ak.fund_etf_spot_em()
+                if df is not None and not df.empty:
+                    now = time.time()
+                    for code in etf_codes:
+                        row = df[df['代码'] == code]
+                        if not row.empty:
+                            row = row.iloc[0]
+                            quote = UnifiedRealtimeQuote(
+                                code=code,
+                                name=row.get('名称'),
+                                source=RealtimeSource.AKSHARE_EM,
+                                price=safe_float(row.get('最新价')),
+                                change_pct=safe_float(row.get('涨跌幅')),
+                                volume=safe_float(row.get('成交量')),
+                                amount=safe_float(row.get('成交额')),
+                                open_price=safe_float(row.get('开盘价')),
+                                high=safe_float(row.get('最高价')),
+                                low=safe_float(row.get('最低价')),
+                                pre_close=safe_float(row.get('昨收')),
+                            )
+                            result[code] = quote
+                            self._realtime_cache[f"{code}_em"] = quote
+                    self._realtime_cache_time = now
+            except Exception as e:
+                _LOGGER.warning(f"[{self.name}] 批量获取 ETF 实时行情失败: {e}")
+
+        # 批量获取 A 股
+        if a_codes:
+            try:
+                self.random_sleep(0.5, 1.5)
+                df = ak.stock_zh_a_spot_em()
+                if df is not None and not df.empty:
+                    now = time.time()
+                    for code in a_codes:
+                        row = df[df['代码'] == code]
+                        if not row.empty:
+                            row = row.iloc[0]
+                            quote = UnifiedRealtimeQuote(
+                                code=code,
+                                name=row.get('名称'),
+                                source=RealtimeSource.AKSHARE_EM,
+                                price=safe_float(row.get('最新价')),
+                                change_pct=safe_float(row.get('涨跌幅')),
+                                change_amount=safe_float(row.get('涨跌额')),
+                                volume=safe_float(row.get('成交量')),
+                                amount=safe_float(row.get('成交额')),
+                                volume_ratio=safe_float(row.get('量比')),
+                                turnover_rate=safe_float(row.get('换手率')),
+                                amplitude=safe_float(row.get('振幅')),
+                                open_price=safe_float(row.get('今开')),
+                                high=safe_float(row.get('最高')),
+                                low=safe_float(row.get('最低')),
+                                pre_close=safe_float(row.get('昨收')),
+                                pe_ratio=safe_float(row.get('市盈率-动态')),
+                                pb_ratio=safe_float(row.get('市净率')),
+                                total_mv=safe_float(row.get('总市值')),
+                                circ_mv=safe_float(row.get('流通市值')),
+                            )
+                            result[code] = quote
+                            self._realtime_cache[f"{code}_em"] = quote
+                    self._realtime_cache_time = now
+            except Exception as e:
+                _LOGGER.warning(f"[{self.name}] 批量获取 A股 实时行情失败: {e}")
+
+        # 批量获取港股
+        if hk_codes:
+            try:
+                self.random_sleep(0.5, 1.5)
+                df = ak.stock_hk_spot_em()
+                if df is not None and not df.empty:
+                    now = time.time()
+                    for code in hk_codes:
+                        clean_code = code.lower().replace('hk', '').lstrip('0')
+                        row = df[df['代码'] == clean_code]
+                        if not row.empty:
+                            row = row.iloc[0]
+                            quote = UnifiedRealtimeQuote(
+                                code=code,
+                                name=row.get('名称'),
+                                source=RealtimeSource.AKSHARE_EM,
+                                price=safe_float(row.get('最新价')),
+                                change_pct=safe_float(row.get('涨跌幅')),
+                                volume=safe_float(row.get('成交量')),
+                                amount=safe_float(row.get('成交额')),
+                                open_price=safe_float(row.get('今开')),
+                                high=safe_float(row.get('最高')),
+                                low=safe_float(row.get('最低')),
+                                pre_close=safe_float(row.get('昨收')),
+                            )
+                            result[code] = quote
+                            self._realtime_cache[f"{code}_em"] = quote
+                    self._realtime_cache_time = now
+            except Exception as e:
+                _LOGGER.warning(f"[{self.name}] 批量获取港股实时行情失败: {e}")
+
+        return result
+
     def get_chip_distribution(self, stock_code: str) -> Optional[ChipDistribution]:
         """获取筹码分布"""
         try:
