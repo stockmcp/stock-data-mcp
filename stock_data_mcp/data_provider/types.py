@@ -58,6 +58,7 @@ class RealtimeSource(Enum):
     AKSHARE_QQ = "akshare_qq"
     TENCENT = "tencent"
     SINA = "sina"
+    YFINANCE = "yfinance"
     FALLBACK = "fallback"
 
 

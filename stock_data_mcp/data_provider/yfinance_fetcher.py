@@ -11,6 +11,7 @@ import pandas as pd
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from .base import BaseFetcher, DataFetchError
+from .types import UnifiedRealtimeQuote, RealtimeSource, safe_float, is_hk_code, is_us_code, is_etf_code
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -53,11 +54,11 @@ class YfinanceFetcher(BaseFetcher):
 
         # A股：6位数字代码
         if len(code) == 6 and code.isdigit():
-            # 沪市：6, 9 开头
-            if code.startswith(('6', '9')):
+            # 沪市：6, 9 开头 (含 5 开头的上交所 ETF: 51x, 52x, 56x, 58x)
+            if code.startswith(('6', '9', '5')):
                 return f"{code}.SS"
-            # 深市：0, 2, 3 开头
-            if code.startswith(('0', '2', '3')):
+            # 深市：0, 2, 3 开头 (含 1 开头的深交所 ETF: 15x, 16x, 18x)
+            if code.startswith(('0', '2', '3', '1')):
                 return f"{code}.SZ"
 
         # 港股：5位或更少的纯数字（如 00700 -> 0700.HK）
@@ -426,4 +427,107 @@ class YfinanceFetcher(BaseFetcher):
             }
         except Exception as e:
             _LOGGER.warning(f"[{self.name}] 获取内部交易失败 {symbol}: {e}")
+            return None
+
+    def get_realtime_quote(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
+        """
+        获取实时行情（通过 yfinance）
+        支持港股、美股和 ETF 的实时报价
+        """
+        if not self._available:
+            return None
+
+        # 支持港股、美股和 ETF
+        if not (is_hk_code(stock_code) or is_us_code(stock_code) or is_etf_code(stock_code)):
+            return None
+
+        try:
+            yf_code = self._convert_stock_code(stock_code)
+            ticker = self._yf.Ticker(yf_code)
+
+            # 尝试获取快速信息
+            try:
+                fast_info = ticker.fast_info
+                if fast_info is None:
+                    return None
+
+                price = safe_float(getattr(fast_info, 'last_price', None))
+                prev_close = safe_float(getattr(fast_info, 'previous_close', None))
+                open_price = safe_float(getattr(fast_info, 'open', None))
+                day_high = safe_float(getattr(fast_info, 'day_high', None))
+                day_low = safe_float(getattr(fast_info, 'day_low', None))
+                volume = safe_float(getattr(fast_info, 'last_volume', None))
+                market_cap = safe_float(getattr(fast_info, 'market_cap', None))
+                year_high = safe_float(getattr(fast_info, 'year_high', None))
+                year_low = safe_float(getattr(fast_info, 'year_low', None))
+
+                # 计算涨跌幅
+                change_pct = None
+                change_amount = None
+                if price is not None and prev_close is not None and prev_close != 0:
+                    change_amount = price - prev_close
+                    change_pct = (change_amount / prev_close) * 100
+
+                # 获取股票名称
+                name = None
+                try:
+                    info = ticker.info
+                    name = info.get('shortName') or info.get('longName')
+                except Exception:
+                    pass
+
+                if price is None:
+                    return None
+
+                return UnifiedRealtimeQuote(
+                    code=stock_code,
+                    name=name,
+                    source=RealtimeSource.YFINANCE,
+                    price=price,
+                    change_pct=round(change_pct, 2) if change_pct is not None else None,
+                    change_amount=round(change_amount, 3) if change_amount is not None else None,
+                    volume=volume,
+                    open_price=open_price,
+                    high=day_high,
+                    low=day_low,
+                    pre_close=prev_close,
+                    total_mv=market_cap,
+                    high_52w=year_high,
+                    low_52w=year_low,
+                )
+
+            except Exception as e:
+                _LOGGER.debug(f"[{self.name}] fast_info 获取失败，尝试 history: {e}")
+
+            # fallback: 使用 history 获取最近一天数据
+            hist = ticker.history(period="1d")
+            if hist is None or hist.empty:
+                return None
+
+            last_row = hist.iloc[-1]
+            price = safe_float(last_row.get('Close'))
+            if price is None:
+                return None
+
+            # 尝试获取名称
+            name = None
+            try:
+                info = ticker.info
+                name = info.get('shortName') or info.get('longName')
+            except Exception:
+                pass
+
+            return UnifiedRealtimeQuote(
+                code=stock_code,
+                name=name,
+                source=RealtimeSource.YFINANCE,
+                price=price,
+                open_price=safe_float(last_row.get('Open')),
+                high=safe_float(last_row.get('High')),
+                low=safe_float(last_row.get('Low')),
+                volume=safe_float(last_row.get('Volume')),
+            )
+
+        except Exception as e:
+            _LOGGER.warning(f"[{self.name}] 获取 {stock_code} 实时行情失败: {e}")
             return None

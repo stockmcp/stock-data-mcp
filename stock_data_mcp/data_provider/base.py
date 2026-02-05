@@ -292,19 +292,21 @@ class DataFetcherManager:
         """
         # 根据股票类型调整优先级
         if stock_type == StockType.HK:
-            # 港股：只有 AkshareFetcher 支持
+            # 港股：Akshare > Yfinance (fallback)
             priority_order = {
                 "AkshareFetcher": 0,
+                "YfinanceFetcher": 1,
             }
         elif stock_type == StockType.ETF:
-            # ETF：Akshare 支持 fund_etf_spot_em，Efinance 不支持
+            # ETF：Akshare > Yfinance (fallback)，Efinance 不支持
             priority_order = {
                 "AkshareFetcher": 0,
+                "YfinanceFetcher": 1,
                 "EfinanceFetcher": 10,  # 降低优先级，因为不支持 ETF
                 "TushareFetcher": 10,
             }
         elif stock_type == StockType.US:
-            # 美股：暂无实时行情支持
+            # 美股：YFinance 支持实时行情
             priority_order = {
                 "YfinanceFetcher": 0,
                 "AlphaVantageFetcher": 1,
