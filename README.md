@@ -95,7 +95,6 @@ claude mcp add stock-data \
 | `okx_taker_volume` | 加密货币买卖量 |
 | `binance_ai_report` | 加密货币AI分析 |
 | `get_current_time` | 系统时间及交易日 |
-| `trading_suggest` | 投资建议 |
 | `data_source_status` | 数据源状态 |
 
 ## License

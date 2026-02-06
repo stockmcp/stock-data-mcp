@@ -556,21 +556,41 @@ def stock_news_global():
         dfs = ak.stock_info_global_sina()
         csv = dfs.to_csv(index=False, float_format="%.2f").strip()
         csv = csv.replace(datetime.now().strftime("%Y-%m-%d "), "")
-        news.extend(csv.split("\n"))
+        lines = csv.split("\n")
+        # 第一行是标题，保留；后续行添加来源标识
+        if lines:
+            news.append(lines[0] + ",来源")  # 添加来源列标题
+            for line in lines[1:]:
+                news.append(f"{line},新浪财经")
     except Exception:
         pass
     news.extend(newsnow_news())
     return "\n".join(news)
 
 
+# NewsNow 频道名称映射
+_NEWSNOW_CHANNEL_NAMES = {
+    "wallstreetcn-quick": "华尔街见闻",
+    "cls-telegraph": "财联社",
+    "jin10": "金十数据",
+    "gelonghui": "格隆汇",
+    "fastbull-express": "快讯通",
+    "yicai": "第一财经",
+    "caixin": "财新",
+    "36kr-newsflash": "36氪",
+}
+
+
 def newsnow_news(channels=None):
     base = os.getenv("NEWSNOW_BASE_URL")
     if not base:
+        _LOGGER.debug("NEWSNOW_BASE_URL 未配置，跳过 NewsNow 数据源")
         return []
     if not channels:
         channels = os.getenv("NEWSNOW_CHANNELS") or "wallstreetcn-quick,cls-telegraph,jin10"
     if isinstance(channels, str):
         channels = channels.split(",")
+    _LOGGER.debug(f"NewsNow 请求: base={base}, channels={channels}")
     all = []
     try:
         res = requests.post(
@@ -582,16 +602,24 @@ def newsnow_news(channels=None):
             },
             timeout=60,
         )
+        _LOGGER.debug(f"NewsNow 响应状态: {res.status_code}")
         lst = res.json() or []
+        _LOGGER.debug(f"NewsNow 获取到 {len(lst)} 个频道数据")
         for item in lst:
+            source_id = item.get("id", "")
+            source_name = _NEWSNOW_CHANNEL_NAMES.get(source_id, source_id)
             for v in item.get("items", [])[0:15]:
                 title = v.get("title", "")
                 extra = v.get("extra") or {}
                 hover = extra.get("hover") or title
                 info = extra.get("info") or ""
-                all.append(f"{hover} {info}".strip().replace("\n", " "))
-    except Exception:
-        pass
+                content = f"{hover} {info}".strip().replace("\n", " ")
+                # 提取时间 (格式: 2026-02-06 13:26:11 -> 13:26:11)
+                pub_date = str(v.get("pubDate", ""))
+                time_str = pub_date.split(" ")[-1] if " " in pub_date else ""
+                all.append(f"{time_str},{content},{source_name}")
+    except Exception as e:
+        _LOGGER.warning(f"NewsNow 请求失败: {e}")
     return all
 
 
@@ -749,24 +777,6 @@ def binance_ai_report(
 
 
 @mcp.tool(
-    title="给出投资建议",
-    description="基于AI对其他工具提供的数据分析结果给出具体投资建议",
-)
-def trading_suggest(
-    symbol: str = Field(description="股票代码或加密币种"),
-    action: str = Field(description="推荐操作: buy/sell/hold"),
-    score: int = Field(description="置信度，范围: 0-100"),
-    reason: str = Field(description="推荐理由"),
-):
-    return {
-        "symbol": symbol,
-        "action": action,
-        "score": score,
-        "reason": reason,
-    }
-
-
-@mcp.tool(
     title="获取股票实时行情",
     description="获取A股/港股实时行情数据，包括最新价、涨跌幅、成交量、换手率、市盈率等。支持多数据源自动故障转移。",
 )
@@ -783,33 +793,30 @@ def stock_realtime(
         if quote is None:
             return f"Not Found for {symbol}.{validated_market}"
 
-        # 格式化输出（Markdown）
-        lines = [
-            f"# {quote.name or symbol} ({quote.code}) 实时行情\n",
-            f"数据来源: {quote.source.value if quote.source else '-'}\n",
-            "## 价格",
-            f"- 最新价: {quote.price or '-'}",
-            f"- 涨跌幅: {quote.change_pct or '-'}%",
-            f"- 涨跌额: {quote.change_amount or '-'}",
-            f"- 今开: {quote.open_price or '-'}",
-            f"- 最高: {quote.high or '-'}",
-            f"- 最低: {quote.low or '-'}",
-            f"- 昨收: {quote.pre_close or '-'}",
-            f"- 振幅: {quote.amplitude or '-'}%",
-            "",
-            "## 成交",
-            f"- 成交量: {quote.volume or '-'}",
-            f"- 成交额: {quote.amount or '-'}",
-            f"- 换手率: {quote.turnover_rate or '-'}%",
-            f"- 量比: {quote.volume_ratio or '-'}",
-            "",
-            "## 估值",
-            f"- 市盈率: {quote.pe_ratio or '-'}",
-            f"- 市净率: {quote.pb_ratio or '-'}",
-            f"- 总市值: {quote.total_mv or '-'}",
-            f"- 流通市值: {quote.circ_mv or '-'}",
-        ]
-        return "\n".join(lines)
+        # 统一输出为 CSV 格式（与 batch_realtime 一致）
+        row = {
+            "代码": quote.code,
+            "名称": quote.name or "-",
+            "最新价": quote.price,
+            "涨跌幅": quote.change_pct,
+            "涨跌额": quote.change_amount,
+            "今开": quote.open_price,
+            "最高": quote.high,
+            "最低": quote.low,
+            "昨收": quote.pre_close,
+            "成交量": quote.volume,
+            "成交额": quote.amount,
+            "换手率": quote.turnover_rate,
+            "量比": quote.volume_ratio,
+            "振幅": quote.amplitude,
+            "市盈率": quote.pe_ratio,
+            "市净率": quote.pb_ratio,
+            "总市值": quote.total_mv,
+            "流通市值": quote.circ_mv,
+            "数据源": quote.source.value if quote.source else "-",
+        }
+        df = pd.DataFrame([row])
+        return df.to_csv(index=False, float_format="%.2f").strip()
     except Exception as e:
         _LOGGER.warning(f"获取实时行情失败: {e}")
         return f"获取 {symbol} 实时行情失败: {e}"
@@ -876,7 +883,7 @@ def stock_batch_realtime(
         if not quotes:
             return "未获取到任何行情数据"
 
-        # 转换为 DataFrame 输出
+        # 转换为 DataFrame 输出（与 stock_realtime 字段一致）
         rows = []
         for code, quote in quotes.items():
             rows.append({
@@ -884,6 +891,11 @@ def stock_batch_realtime(
                 "名称": quote.name or "-",
                 "最新价": quote.price,
                 "涨跌幅": quote.change_pct,
+                "涨跌额": quote.change_amount,
+                "今开": quote.open_price,
+                "最高": quote.high,
+                "最低": quote.low,
+                "昨收": quote.pre_close,
                 "成交量": quote.volume,
                 "成交额": quote.amount,
                 "换手率": quote.turnover_rate,

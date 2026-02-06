@@ -95,7 +95,6 @@ claude mcp add stock-data \
 | `okx_taker_volume` | Crypto taker volume |
 | `binance_ai_report` | Crypto AI analysis |
 | `get_current_time` | System time & trading day |
-| `trading_suggest` | Trading suggestion |
 | `data_source_status` | Data source status |
 
 ## License
