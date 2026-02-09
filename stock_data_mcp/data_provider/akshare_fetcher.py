@@ -566,14 +566,39 @@ class AkshareFetcher(BaseFetcher):
             return None
 
     def get_board_cons(self, board_name: str, board_type: str = "industry") -> Optional[pd.DataFrame]:
-        """获取板块成分股"""
+        """获取板块成分股（先查找精确板块名再获取成分股）"""
         try:
-            self.random_sleep(1.0, 2.0)
+            self.random_sleep(0.5, 1.5)
 
+            # 1. 先获取板块列表，查找精确匹配的板块名
             if board_type == "concept":
-                df = ak.stock_board_concept_cons_em(symbol=board_name)
+                boards = ak.stock_board_concept_name_em()
             else:
-                df = ak.stock_board_industry_cons_em(symbol=board_name)
+                boards = ak.stock_board_industry_name_em()
+
+            if boards is None or boards.empty:
+                _LOGGER.warning(f"[{self.name}] 获取板块列表为空")
+                return None
+
+            # 2. 精确匹配或模糊匹配板块名
+            exact_match = boards[boards["板块名称"] == board_name]
+            if exact_match.empty:
+                # 尝试模糊匹配
+                fuzzy_match = boards[boards["板块名称"].str.contains(board_name, na=False)]
+                if fuzzy_match.empty:
+                    _LOGGER.warning(f"[{self.name}] 未找到板块: {board_name}")
+                    return None
+                matched_name = fuzzy_match.iloc[0]["板块名称"]
+                _LOGGER.info(f"[{self.name}] 模糊匹配板块: {board_name} -> {matched_name}")
+            else:
+                matched_name = exact_match.iloc[0]["板块名称"]
+
+            # 3. 使用精确板块名获取成分股
+            self.random_sleep(0.5, 1.0)
+            if board_type == "concept":
+                df = ak.stock_board_concept_cons_em(symbol=matched_name)
+            else:
+                df = ak.stock_board_industry_cons_em(symbol=matched_name)
 
             return df
         except Exception as e:

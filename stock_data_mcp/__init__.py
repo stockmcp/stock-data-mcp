@@ -35,7 +35,7 @@ _data_manager_lock = threading.Lock()
 
 # 技术指标列定义（复用于股票和加密货币K线输出）
 MA_COLUMNS = ["MA5", "MA10", "MA20", "MA30", "MA60"]
-INDICATOR_COLUMNS = ["MACD", "DIF", "DEA", "KDJ.K", "KDJ.D", "KDJ.J", "RSI6", "RSI", "RSI24", "BOLL.U", "BOLL.M", "BOLL.L", "OBV", "ATR"]
+INDICATOR_COLUMNS = ["MACD", "DIF", "DEA", "KDJ.K", "KDJ.D", "KDJ.J", "RSI6", "RSI", "RSI24", "BOLL.U", "BOLL.M", "BOLL.L", "OBV", "ATR", "ADX", "CCI", "WR", "VWAP"]
 STOCK_PRICE_COLUMNS = ["日期", "开盘", "收盘", "最高", "最低", "成交量", "换手率"] + MA_COLUMNS + INDICATOR_COLUMNS
 CRYPTO_PRICE_COLUMNS = ["时间", "开盘", "收盘", "最高", "最低", "成交量", "成交额"] + MA_COLUMNS + INDICATOR_COLUMNS
 
@@ -383,45 +383,41 @@ def stock_news_em(symbol, limit=20):
 
 
 @mcp.tool(
-    title="A股关键指标",
-    description="获取中国A股市场(上证、深证)的股票财务报告关键指标",
+    title="股票财务指标",
+    description="获取股票财务报告关键指标，支持A股、港股、美股市场",
 )
-def stock_indicators_a(
+def stock_indicators(
     symbol: str = field_symbol,
+    market: str = Field("sh", description="市场: 'sh'/'sz'(A股), 'hk'(港股), 'us'(美股)"),
 ):
-    dfs = ak_cache(ak.stock_financial_abstract_ths, symbol=symbol)
-    if dfs is None or dfs.empty:
-        return f"获取A股指标失败: {symbol}"
-    keys = dfs.to_csv(index=False, float_format="%.3f").strip().split("\n")
-    return "\n".join([keys[0], *keys[-15:]])
-
-
-@mcp.tool(
-    title="港股关键指标",
-    description="获取港股市场的股票财务报告关键指标",
-)
-def stock_indicators_hk(
-    symbol: str = field_symbol,
-):
-    dfs = ak_cache(ak.stock_financial_hk_analysis_indicator_em, symbol=symbol, indicator="报告期")
-    if dfs is None or dfs.empty:
-        return f"获取港股指标失败: {symbol}"
-    keys = dfs.to_csv(index=False, float_format="%.3f").strip().split("\n")
-    return "\n".join(keys[0:15])
-
-
-@mcp.tool(
-    title="美股关键指标",
-    description="获取美股市场的股票财务报告关键指标",
-)
-def stock_indicators_us(
-    symbol: str = field_symbol,
-):
-    dfs = ak_cache(ak.stock_financial_us_analysis_indicator_em, symbol=symbol, indicator="单季报")
-    if dfs is None or dfs.empty:
-        return f"获取美股指标失败: {symbol}"
-    keys = dfs.to_csv(index=False, float_format="%.3f").strip().split("\n")
-    return "\n".join(keys[0:15])
+    """获取股票财务指标"""
+    try:
+        if market in ["sh", "sz"]:
+            # A股
+            dfs = ak_cache(ak.stock_financial_abstract_ths, symbol=symbol)
+            if dfs is None or dfs.empty:
+                return f"获取A股指标失败: {symbol}"
+            keys = dfs.to_csv(index=False, float_format="%.3f").strip().split("\n")
+            return "\n".join([keys[0], *keys[-15:]])
+        elif market == "hk":
+            # 港股
+            dfs = ak_cache(ak.stock_financial_hk_analysis_indicator_em, symbol=symbol, indicator="报告期")
+            if dfs is None or dfs.empty:
+                return f"获取港股指标失败: {symbol}"
+            keys = dfs.to_csv(index=False, float_format="%.3f").strip().split("\n")
+            return "\n".join(keys[0:15])
+        elif market == "us":
+            # 美股
+            dfs = ak_cache(ak.stock_financial_us_analysis_indicator_em, symbol=symbol, indicator="单季报")
+            if dfs is None or dfs.empty:
+                return f"获取美股指标失败: {symbol}"
+            keys = dfs.to_csv(index=False, float_format="%.3f").strip().split("\n")
+            return "\n".join(keys[0:15])
+        else:
+            return f"不支持的市场类型: {market}"
+    except Exception as exc:
+        _LOGGER.warning(f"获取财务指标失败: {exc}")
+        return f"获取财务指标失败: {exc}"
 
 
 @mcp.tool(
@@ -457,45 +453,44 @@ def recent_trade_date():
 
 
 @mcp.tool(
-    title="A股涨停股池",
-    description="获取中国A股市场(上证、深证)的所有涨停股票",
+    title="A股涨停/强势股池",
+    description="获取中国A股市场(上证、深证)的涨停股池或强势股池数据",
 )
-def stock_zt_pool_em(
+def stock_zt_pool(
+    pool_type: str = Field("涨停", description="股池类型: '涨停'(涨停股池), '强势'(强势股池), '跌停'(跌停股池), '昨日涨停'(昨日涨停股今日表现)"),
     date: str = Field("", description="交易日日期(可选)，默认为最近的交易日，格式: 20251231"),
     limit: int = Field(50, description="返回数量(int,30-100)", strict=False),
 ):
     if not date:
         date = recent_trade_date().strftime("%Y%m%d")
-    dfs = ak_cache(ak.stock_zt_pool_em, date=date, ttl=1200)
-    if dfs is None or dfs.empty:
-        return "获取涨停股池数据失败"
-    cnt = len(dfs)
-    dfs.drop(columns=["序号", "流通市值", "总市值"], inplace=True, errors='ignore')
-    if "成交额" in dfs.columns:
-        dfs.sort_values("成交额", ascending=False, inplace=True)
-    dfs = dfs.head(int(limit))
-    desc = f"共{cnt}只涨停股\n"
-    return desc + dfs.to_csv(index=False, float_format="%.2f").strip()
 
+    try:
+        if pool_type == "强势":
+            dfs = ak_cache(ak.stock_zt_pool_strong_em, date=date, ttl=1200)
+            title = "强势股池"
+        elif pool_type == "跌停":
+            dfs = ak_cache(ak.stock_zt_pool_dtgc_em, date=date, ttl=1200)
+            title = "跌停股池"
+        elif pool_type == "昨日涨停":
+            dfs = ak_cache(ak.stock_zt_pool_zbgc_em, date=date, ttl=1200)
+            title = "昨日涨停股今日表现"
+        else:
+            dfs = ak_cache(ak.stock_zt_pool_em, date=date, ttl=1200)
+            title = "涨停股池"
 
-@mcp.tool(
-    title="A股强势股池",
-    description="获取中国A股市场(上证、深证)的强势股池数据",
-)
-def stock_zt_pool_strong_em(
-    date: str = Field("", description="交易日日期(可选)，默认为最近的交易日，格式: 20251231"),
-    limit: int = Field(50, description="返回数量(int,30-100)", strict=False),
-):
-    if not date:
-        date = recent_trade_date().strftime("%Y%m%d")
-    dfs = ak_cache(ak.stock_zt_pool_strong_em, date=date, ttl=1200)
-    if dfs is None or dfs.empty:
-        return "获取强势股池数据失败"
-    dfs.drop(columns=["序号", "流通市值", "总市值"], inplace=True, errors='ignore')
-    if "成交额" in dfs.columns:
-        dfs.sort_values("成交额", ascending=False, inplace=True)
-    dfs = dfs.head(int(limit))
-    return dfs.to_csv(index=False, float_format="%.2f").strip()
+        if dfs is None or dfs.empty:
+            return f"获取{title}数据失败"
+
+        cnt = len(dfs)
+        dfs.drop(columns=["序号", "流通市值", "总市值"], inplace=True, errors='ignore')
+        if "成交额" in dfs.columns:
+            dfs.sort_values("成交额", ascending=False, inplace=True)
+        dfs = dfs.head(int(limit))
+        desc = f"# {title}\n共{cnt}只股票\n"
+        return desc + dfs.to_csv(index=False, float_format="%.2f").strip()
+    except Exception as exc:
+        _LOGGER.warning(f"获取股池数据失败: {exc}")
+        return f"获取股池数据失败: {exc}"
 
 
 @mcp.tool(
@@ -544,6 +539,164 @@ def stock_sector_fund_flow_rank(
     except Exception as exc:
         _LOGGER.warning(f"获取板块资金流失败: {exc}")
         return f"获取{cate}数据失败: {exc}"
+
+
+@mcp.tool(
+    title="沪深港通北向资金",
+    description="获取沪深港通北向资金(外资)流向数据，包括沪股通、深股通的资金净流入情况。北向资金是A股重要的风向标。",
+)
+def stock_north_flow(
+    indicator: str = Field("北向资金", description="指标类型，可选: '北向资金', '沪股通', '深股通'"),
+):
+    """获取北向资金流向数据"""
+    try:
+        # 获取沪深港通资金流向历史数据
+        df = ak_cache(ak.stock_hsgt_fund_flow_summary_em, ttl=600)
+        if df is None or df.empty:
+            return "获取北向资金数据失败"
+
+        # 根据指标筛选
+        if indicator == "沪股通":
+            cols = ["日期", "沪股通-净流入"]
+            if "沪股通-净流入" in df.columns:
+                df = df[["日期", "沪股通-净流入"]].copy()
+                df.columns = ["日期", "净流入(亿)"]
+        elif indicator == "深股通":
+            cols = ["日期", "深股通-净流入"]
+            if "深股通-净流入" in df.columns:
+                df = df[["日期", "深股通-净流入"]].copy()
+                df.columns = ["日期", "净流入(亿)"]
+        else:
+            # 北向资金 = 沪股通 + 深股通
+            if "北向资金-净流入" in df.columns:
+                df = df[["日期", "北向资金-净流入"]].copy()
+                df.columns = ["日期", "净流入(亿)"]
+            elif "沪股通-净流入" in df.columns and "深股通-净流入" in df.columns:
+                df["净流入(亿)"] = df["沪股通-净流入"] + df["深股通-净流入"]
+                df = df[["日期", "净流入(亿)"]].copy()
+
+        # 返回最近30天数据
+        df = df.head(30)
+        return df.to_csv(index=False, float_format="%.2f").strip()
+    except Exception as exc:
+        _LOGGER.warning(f"获取北向资金失败: {exc}")
+        return f"获取北向资金数据失败: {exc}"
+
+
+@mcp.tool(
+    title="A股融资融券",
+    description="获取A股市场融资融券数据，包括融资余额、融券余额等。融资融券是衡量市场杠杆资金的重要指标。",
+)
+def stock_margin_trading(
+    symbol: str = Field("", description="股票代码（可选），留空则获取市场整体数据"),
+    market: str = Field("sh", description="市场: 'sh'(沪市), 'sz'(深市)"),
+    limit: int = Field(30, description="返回数据条数"),
+):
+    """获取融资融券数据"""
+    try:
+        if symbol:
+            # 个股融资融券数据
+            try:
+                df = ak_cache(ak.stock_margin_detail_szse, date="", ttl=1800)
+                if df is not None and not df.empty:
+                    # 尝试筛选指定股票
+                    if "证券代码" in df.columns:
+                        df = df[df["证券代码"].astype(str).str.contains(symbol)]
+                    if df.empty:
+                        return f"未找到股票 {symbol} 的融资融券数据"
+                    return df.head(limit).to_csv(index=False, float_format="%.2f").strip()
+            except Exception:
+                pass
+            return f"获取个股 {symbol} 融资融券数据失败"
+        else:
+            # 市场整体融资融券数据
+            if market == "sh":
+                df = ak_cache(ak.stock_margin_sse, start_date="", end_date="", ttl=1800)
+            else:
+                df = ak_cache(ak.stock_margin_szse, start_date="", end_date="", ttl=1800)
+
+            if df is None or df.empty:
+                return f"获取{market}市场融资融券数据失败"
+
+            # 返回最近的数据
+            df = df.tail(limit)
+            return df.to_csv(index=False, float_format="%.2f").strip()
+    except Exception as exc:
+        _LOGGER.warning(f"获取融资融券失败: {exc}")
+        return f"获取融资融券数据失败: {exc}"
+
+
+@mcp.tool(
+    title="A股大宗交易",
+    description="获取A股大宗交易数据，包括成交价、成交量、溢价率等。大宗交易反映机构大额交易动向。",
+)
+def stock_block_trade(
+    symbol: str = Field("", description="股票代码（可选），留空则获取当日全市场数据"),
+    limit: int = Field(50, description="返回数据条数"),
+):
+    """获取大宗交易数据"""
+    try:
+        if symbol:
+            # 个股大宗交易历史
+            try:
+                df = ak_cache(ak.stock_dzjy_mrmx, symbol=symbol, ttl=1800)
+                if df is not None and not df.empty:
+                    df = df.head(limit)
+                    return df.to_csv(index=False, float_format="%.2f").strip()
+            except Exception:
+                pass
+            # 尝试另一个接口
+            try:
+                df = ak_cache(ak.stock_dzjy_mrtj, start_date="", end_date="", ttl=1800)
+                if df is not None and not df.empty:
+                    if "证券代码" in df.columns:
+                        df = df[df["证券代码"].astype(str).str.contains(symbol)]
+                    if not df.empty:
+                        return df.head(limit).to_csv(index=False, float_format="%.2f").strip()
+            except Exception:
+                pass
+            return f"未找到股票 {symbol} 的大宗交易数据"
+        else:
+            # 全市场大宗交易每日统计
+            df = ak_cache(ak.stock_dzjy_mrtj, start_date="", end_date="", ttl=1800)
+            if df is None or df.empty:
+                return "获取大宗交易数据失败"
+            df = df.head(limit)
+            return df.to_csv(index=False, float_format="%.2f").strip()
+    except Exception as exc:
+        _LOGGER.warning(f"获取大宗交易失败: {exc}")
+        return f"获取大宗交易数据失败: {exc}"
+
+
+@mcp.tool(
+    title="A股股东人数",
+    description="获取A股股东户数变化数据，筹码集中度的重要指标。股东人数减少通常意味着筹码趋于集中。",
+)
+def stock_holder_num(
+    symbol: str = Field(description="股票代码，如: 300058, 600036"),
+):
+    """获取股东人数变化数据"""
+    try:
+        # 尝试获取股东人数数据
+        try:
+            df = ak_cache(ak.stock_zh_a_gdhs, symbol=symbol, ttl=3600)
+            if df is not None and not df.empty:
+                return df.to_csv(index=False, float_format="%.2f").strip()
+        except Exception as e:
+            _LOGGER.debug(f"stock_zh_a_gdhs 失败: {e}")
+
+        # 尝试另一个接口
+        try:
+            df = ak_cache(ak.stock_zh_a_gdhs_detail_em, symbol=symbol, ttl=3600)
+            if df is not None and not df.empty:
+                return df.to_csv(index=False, float_format="%.2f").strip()
+        except Exception as e:
+            _LOGGER.debug(f"stock_zh_a_gdhs_detail_em 失败: {e}")
+
+        return f"未找到股票 {symbol} 的股东人数数据"
+    except Exception as exc:
+        _LOGGER.warning(f"获取股东人数失败: {exc}")
+        return f"获取股东人数数据失败: {exc}"
 
 
 @mcp.tool(
@@ -1114,64 +1267,6 @@ def stock_board_cons(
         return f"获取 {board_name} 成分股失败: {e}"
 
 
-def _fetch_board_cons_direct(board_name: str, board_type: str) -> pd.DataFrame | None:
-    """直接调用东财API获取板块成分股"""
-    # 先获取板块代码
-    try:
-        if board_type == "concept":
-            boards = ak_cache(ak.stock_board_concept_name_em, ttl=3600)
-            code_col = "板块代码"
-        else:
-            boards = ak_cache(ak.stock_board_industry_name_em, ttl=3600)
-            code_col = "板块代码"
-
-        if boards is None or boards.empty:
-            return None
-
-        matched = boards[boards["板块名称"] == board_name]
-        if matched.empty:
-            return None
-
-        board_code = matched[code_col].values[0]
-    except Exception:
-        return None
-
-    # 调用成分股API
-    url = "http://push2.eastmoney.com/api/qt/clist/get"
-    params = {
-        "pn": 1,
-        "pz": 100,
-        "po": 1,
-        "np": 1,
-        "ut": "bd1d9ddb04089700cf9c27f6f7426281",
-        "fltt": 2,
-        "invt": 2,
-        "fid": "f3",
-        "fs": f"b:{board_code}+t:2",
-        "fields": "f12,f14,f2,f3,f4,f5,f6,f7,f15,f16,f17,f18",
-    }
-
-    max_retries = 3
-    for i in range(max_retries):
-        try:
-            res = requests.get(url, params=params, headers={"User-Agent": USER_AGENT}, timeout=20)
-            data = res.json()
-            if data and data.get("data") and data["data"].get("diff"):
-                df = pd.DataFrame(data["data"]["diff"])
-                df = df.rename(columns={
-                    "f12": "代码", "f14": "名称", "f2": "最新价", "f3": "涨跌幅",
-                    "f4": "涨跌额", "f5": "成交量", "f6": "成交额", "f7": "振幅",
-                    "f15": "最高", "f16": "最低", "f17": "今开", "f18": "昨收"
-                })
-                return df
-        except Exception as e:
-            _LOGGER.warning(f"直接API第{i+1}次尝试失败: {e}")
-            if i < max_retries - 1:
-                time.sleep(1 * (i + 1))
-
-    return None
-
-
 def _search_us_stock_fast(symbol: str) -> pd.Series | None:
     """使用 yfinance 快速验证美股代码，避免遍历全部数据"""
     import yfinance as yf
@@ -1372,6 +1467,36 @@ def add_technical_indicators(df, clos, lows, high, volume=None):
     tr3 = abs(lows - clos.shift(1))
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     df["ATR"] = tr.rolling(window=14).mean()
+
+    # 计算ADX（平均趋向指标）- 趋势强度
+    # +DM 和 -DM
+    high_diff = high.diff()
+    low_diff = lows.diff()
+    plus_dm = high_diff.where((high_diff > low_diff.abs()) & (high_diff > 0), 0)
+    minus_dm = low_diff.abs().where((low_diff.abs() > high_diff) & (low_diff < 0), 0)
+    # 平滑的 TR, +DM, -DM
+    atr14 = tr.rolling(window=14).mean()
+    plus_di = 100 * (plus_dm.rolling(window=14).mean() / atr14)
+    minus_di = 100 * (minus_dm.rolling(window=14).mean() / atr14)
+    # DX 和 ADX
+    dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
+    df["ADX"] = dx.rolling(window=14).mean()
+
+    # 计算CCI（商品通道指标）
+    tp = (high + lows + clos) / 3  # 典型价格
+    tp_sma = tp.rolling(window=20).mean()
+    tp_mad = tp.rolling(window=20).apply(lambda x: abs(x - x.mean()).mean(), raw=True)
+    df["CCI"] = (tp - tp_sma) / (0.015 * tp_mad)
+
+    # 计算Williams %R（威廉指标）
+    highest_high = high.rolling(window=14).max()
+    lowest_low = lows.rolling(window=14).min()
+    df["WR"] = -100 * (highest_high - clos) / (highest_high - lowest_low)
+
+    # 计算VWAP（成交量加权平均价）
+    if volume is not None:
+        tp_vol = tp * volume
+        df["VWAP"] = tp_vol.cumsum() / volume.cumsum()
 
 
 # ==================== Alpha Vantage 美股工具 ====================
