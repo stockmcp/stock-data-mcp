@@ -35,7 +35,16 @@ _data_manager_lock = threading.Lock()
 
 # 技术指标列定义（复用于股票和加密货币K线输出）
 MA_COLUMNS = ["MA5", "MA10", "MA20", "MA30", "MA60"]
-INDICATOR_COLUMNS = ["MACD", "DIF", "DEA", "KDJ.K", "KDJ.D", "KDJ.J", "RSI6", "RSI", "RSI24", "BOLL.U", "BOLL.M", "BOLL.L", "OBV", "ATR", "ADX", "CCI", "WR", "VWAP"]
+INDICATOR_COLUMNS = [
+    "MACD", "DIF", "DEA",
+    "KDJ.K", "KDJ.D", "KDJ.J",
+    "RSI6", "RSI", "RSI24",
+    "BOLL.U", "BOLL.M", "BOLL.L", "BOLL.W",  # 新增布林带宽度
+    "OBV", "VMA5", "VMA10",  # 新增成交量均线
+    "ATR",
+    "ADX", "+DI", "-DI",  # 新增DMI方向指标
+    "CCI", "WR", "VWAP",
+]
 STOCK_PRICE_COLUMNS = ["日期", "开盘", "收盘", "最高", "最低", "成交量", "换手率"] + MA_COLUMNS + INDICATOR_COLUMNS
 CRYPTO_PRICE_COLUMNS = ["时间", "开盘", "收盘", "最高", "最低", "成交量", "成交额"] + MA_COLUMNS + INDICATOR_COLUMNS
 
@@ -1542,12 +1551,17 @@ def add_technical_indicators(df, clos, lows, high, volume=None):
     std = clos.rolling(window=20).std()
     df["BOLL.U"] = df["BOLL.M"] + 2 * std
     df["BOLL.L"] = df["BOLL.M"] - 2 * std
+    # 布林带宽度 - 波动率收缩/扩张指标
+    df["BOLL.W"] = (df["BOLL.U"] - df["BOLL.L"]) / df["BOLL.M"] * 100
 
     # 计算OBV（能量潮指标）- 向量化实现
     if volume is not None:
         price_diff = clos.diff()
         direction = np.sign(price_diff).fillna(0)
         df["OBV"] = (direction * volume).fillna(0).cumsum()
+        # 成交量均线 - 量能趋势判断
+        df["VMA5"] = volume.rolling(window=5, min_periods=1).mean()
+        df["VMA10"] = volume.rolling(window=10, min_periods=1).mean()
 
     # 计算ATR（真实波幅）
     tr1 = high - lows
@@ -1569,6 +1583,9 @@ def add_technical_indicators(df, clos, lows, high, volume=None):
     # DX 和 ADX
     dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di)
     df["ADX"] = dx.rolling(window=14).mean()
+    # 添加 +DI 和 -DI（DMI 方向指标）- 配合 ADX 判断多空方向
+    df["+DI"] = plus_di
+    df["-DI"] = minus_di
 
     # 计算CCI（商品通道指标）
     tp = (high + lows + clos) / 3  # 典型价格
@@ -1887,6 +1904,684 @@ def stock_tech_indicators_us(
     except Exception as e:
         _LOGGER.warning(f"获取美股技术指标失败: {e}")
         return f"获取 {symbol} {indicator} 指标失败: {e}"
+
+
+@mcp.tool(
+    title="A股估值对比",
+    description="获取A股个股估值与行业对比数据，包括PE/PB在行业中的分位数。",
+)
+def stock_valuation_compare(
+    symbol: str = field_symbol,
+):
+    """获取个股估值与同行业对比"""
+    try:
+        # 1. 获取个股基本信息（含估值）
+        base_info = ef.stock.get_base_info(symbol)
+        if base_info is None or base_info.empty:
+            return f"未获取到 {symbol} 基本信息"
+
+        stock_name = base_info.get("股票名称", "-")
+        stock_pe = base_info.get("市盈率(动)", None)
+        stock_pb = base_info.get("市净率", None)
+        stock_roe = base_info.get("ROE", None)
+        industry = base_info.get("所处行业", "-")
+
+        # 2. 获取所属行业板块
+        boards = ef.stock.get_belong_board(symbol)
+        if boards is None or boards.empty:
+            return f"未获取到 {symbol} 板块信息"
+
+        # 找到行业板块（板块代码以 BK04 开头的通常是行业分类）
+        industry_board = boards[boards["板块代码"].str.startswith("BK04")]
+        if industry_board.empty:
+            # 回退到第一个板块
+            industry_board = boards.head(1)
+
+        board_code = industry_board.iloc[0]["板块代码"]
+        board_name = industry_board.iloc[0]["板块名称"]
+
+        # 3. 获取板块成分股（使用 manager）
+        manager = get_data_manager()
+        peers_df = manager.get_board_cons(board_name, "industry")
+
+        if peers_df is None or peers_df.empty:
+            # 尝试概念板块
+            peers_df = manager.get_board_cons(board_name, "concept")
+
+        if peers_df is None or peers_df.empty:
+            # 无法获取同行业数据，只返回个股信息
+            lines = [
+                f"# {stock_name} ({symbol}) 估值信息\n",
+                f"数据来源: efinance\n",
+                f"所属行业: {industry}\n",
+                "",
+                f"## 估值指标",
+                f"- 市盈率(动态): {stock_pe or '-'}",
+                f"- 市净率: {stock_pb or '-'}",
+                f"- ROE: {stock_roe or '-'}%",
+                "",
+                "注：未能获取同行业数据进行对比",
+            ]
+            return "\n".join(lines)
+
+        # 4. 获取同行业股票估值
+        peer_codes = []
+        code_col = None
+        for col in ["代码", "股票代码", "证券代码"]:
+            if col in peers_df.columns:
+                code_col = col
+                break
+        if code_col:
+            peer_codes = peers_df[code_col].astype(str).tolist()[:20]  # 限制20只，加快速度
+
+        # 5. 批量获取实时行情（包含PE/PB），带容错
+        peer_quotes = {}
+        if peer_codes:
+            try:
+                peer_quotes = manager.prefetch_realtime_quotes(peer_codes)
+            except Exception as e:
+                _LOGGER.warning(f"批量获取同行业行情失败: {e}")
+
+        # 6. 计算分位数
+        pe_values = []
+        pb_values = []
+        for code, quote in peer_quotes.items():
+            if quote.pe_ratio is not None and quote.pe_ratio > 0:
+                pe_values.append(quote.pe_ratio)
+            if quote.pb_ratio is not None and quote.pb_ratio > 0:
+                pb_values.append(quote.pb_ratio)
+
+        pe_percentile = None
+        pb_percentile = None
+        pe_median = None
+        pb_median = None
+
+        if stock_pe and pe_values:
+            pe_values_sorted = sorted(pe_values)
+            pe_median = pe_values_sorted[len(pe_values_sorted) // 2]
+            count_below = sum(1 for v in pe_values if v < stock_pe)
+            pe_percentile = count_below / len(pe_values) * 100
+
+        if stock_pb and pb_values:
+            pb_values_sorted = sorted(pb_values)
+            pb_median = pb_values_sorted[len(pb_values_sorted) // 2]
+            count_below = sum(1 for v in pb_values if v < stock_pb)
+            pb_percentile = count_below / len(pb_values) * 100
+
+        # 7. 格式化输出
+        lines = [
+            f"# {stock_name} ({symbol}) 估值对比分析\n",
+            f"数据来源: efinance + DataFetcherManager\n",
+            f"所属行业: {board_name} (共{len(peer_codes)}只股票)\n",
+            "",
+            "## 个股估值",
+            f"- 市盈率(动态): {stock_pe or '-'}",
+            f"- 市净率: {stock_pb or '-'}",
+            f"- ROE: {stock_roe or '-'}%",
+            "",
+        ]
+
+        if not peer_quotes:
+            lines.append("## 行业对比")
+            lines.append("暂无同行业数据（网络问题），请稍后重试")
+            return "\n".join(lines)
+
+        lines.append("## 行业对比")
+
+        if pe_percentile is not None:
+            pe_level = "高估" if pe_percentile > 70 else "低估" if pe_percentile < 30 else "中性"
+            lines.append(f"- PE分位: {pe_percentile:.1f}% ({pe_level})")
+            lines.append(f"- 行业PE中位数: {pe_median:.2f}")
+
+        if pb_percentile is not None:
+            pb_level = "高估" if pb_percentile > 70 else "低估" if pb_percentile < 30 else "中性"
+            lines.append(f"- PB分位: {pb_percentile:.1f}% ({pb_level})")
+            lines.append(f"- 行业PB中位数: {pb_median:.2f}")
+
+        # 8. 估值建议
+        lines.append("")
+        lines.append("## 估值评估")
+        if pe_percentile is not None and pb_percentile is not None:
+            avg_percentile = (pe_percentile + pb_percentile) / 2
+            if avg_percentile < 30:
+                lines.append("综合评估: **低估** - PE/PB均低于行业70%的股票")
+            elif avg_percentile > 70:
+                lines.append("综合评估: **高估** - PE/PB均高于行业70%的股票")
+            else:
+                lines.append("综合评估: **合理** - PE/PB处于行业中等水平")
+        else:
+            lines.append("综合评估: 数据不足，无法评估")
+
+        return "\n".join(lines)
+    except Exception as e:
+        _LOGGER.warning(f"获取估值对比失败: {e}")
+        return f"获取 {symbol} 估值对比失败: {e}"
+
+
+@mcp.tool(
+    title="A股市场PE分位",
+    description="获取A股市场整体PE/PB的历史分位数，用于判断市场整体估值水平。",
+)
+def stock_market_pe_percentile():
+    """获取A股市场PE历史分位"""
+    try:
+        # 获取市场PE历史数据
+        pe_df = ak_cache(ak.stock_a_ttm_lyr, ttl=3600)
+        pb_df = ak_cache(ak.stock_a_all_pb, ttl=3600)
+
+        if pe_df is None or pe_df.empty:
+            return "获取市场PE数据失败"
+
+        # 获取最新数据
+        latest_pe = pe_df.iloc[-1]
+        pe_ttm_median = latest_pe.get("middlePETTM", None)
+        pe_ttm_avg = latest_pe.get("averagePETTM", None)
+        pe_percentile_all = latest_pe.get("quantileInAllHistoryMiddlePeTtm", None)
+        pe_percentile_10y = latest_pe.get("quantileInRecent10YearsMiddlePeTtm", None)
+
+        lines = [
+            "# A股市场估值分位\n",
+            "数据来源: akshare (乐咕乐股)\n",
+            "",
+            "## 市盈率(PE-TTM)",
+            f"- 中位数PE: {pe_ttm_median:.2f}" if pe_ttm_median else "- 中位数PE: -",
+            f"- 平均PE: {pe_ttm_avg:.2f}" if pe_ttm_avg else "- 平均PE: -",
+        ]
+
+        if pe_percentile_all is not None:
+            pct = pe_percentile_all * 100
+            level = "极度高估" if pct > 80 else "高估" if pct > 60 else "合理" if pct > 40 else "低估" if pct > 20 else "极度低估"
+            lines.append(f"- 历史分位(全部): {pct:.1f}% ({level})")
+
+        if pe_percentile_10y is not None:
+            pct = pe_percentile_10y * 100
+            level = "极度高估" if pct > 80 else "高估" if pct > 60 else "合理" if pct > 40 else "低估" if pct > 20 else "极度低估"
+            lines.append(f"- 历史分位(近10年): {pct:.1f}% ({level})")
+
+        if pb_df is not None and not pb_df.empty:
+            latest_pb = pb_df.iloc[-1]
+            pb_median = latest_pb.get("middlePB", None)
+            pb_percentile_all = latest_pb.get("quantileInAllHistoryMiddlePB", None)
+            pb_percentile_10y = latest_pb.get("quantileInRecent10YearsMiddlePB", None)
+
+            lines.append("")
+            lines.append("## 市净率(PB)")
+            if pb_median:
+                lines.append(f"- 中位数PB: {pb_median:.2f}")
+            if pb_percentile_all is not None:
+                pct = pb_percentile_all * 100
+                level = "极度高估" if pct > 80 else "高估" if pct > 60 else "合理" if pct > 40 else "低估" if pct > 20 else "极度低估"
+                lines.append(f"- 历史分位(全部): {pct:.1f}% ({level})")
+            if pb_percentile_10y is not None:
+                pct = pb_percentile_10y * 100
+                lines.append(f"- 历史分位(近10年): {pct:.1f}%")
+
+        # 综合评估
+        lines.append("")
+        lines.append("## 市场估值建议")
+        if pe_percentile_10y is not None:
+            pct = pe_percentile_10y * 100
+            if pct < 30:
+                lines.append("当前市场估值处于**历史低位**，长期投资价值凸显")
+            elif pct > 70:
+                lines.append("当前市场估值处于**历史高位**，需注意回调风险")
+            else:
+                lines.append("当前市场估值处于**历史中位**，选股重于择时")
+
+        return "\n".join(lines)
+    except Exception as e:
+        _LOGGER.warning(f"获取市场PE分位失败: {e}")
+        return f"获取市场PE分位失败: {e}"
+
+
+@mcp.tool(
+    title="A股行业PE对比",
+    description="获取A股各行业PE对比数据，用于行业估值比较和行业轮动分析。",
+)
+def stock_industry_pe(
+    date: str = Field("", description="日期(可选)，格式: 20250210，默认最新"),
+):
+    """获取行业PE对比"""
+    try:
+        if not date:
+            date = recent_trade_date().strftime("%Y%m%d")
+
+        # 获取行业PE数据
+        df = ak_cache(
+            ak.stock_industry_pe_ratio_cninfo,
+            symbol="证监会行业分类",
+            date=date,
+            ttl=3600
+        )
+
+        if df is None or df.empty:
+            return f"获取行业PE数据失败，日期: {date}"
+
+        # 筛选一级行业
+        df_l1 = df[df["行业层级"] == 1.0].copy()
+        if df_l1.empty:
+            df_l1 = df.head(20)
+
+        # 按PE排序
+        df_l1 = df_l1.sort_values("静态市盈率-加权平均", ascending=True)
+
+        lines = [
+            "# A股行业PE对比\n",
+            f"数据来源: akshare (巨潮资讯)\n",
+            f"数据日期: {date}\n",
+            "",
+            "## 行业PE排名 (按加权PE升序)",
+        ]
+
+        # 输出CSV格式
+        cols = ["行业名称", "公司数量", "静态市盈率-加权平均", "静态市盈率-中位数"]
+        df_out = df_l1[cols].copy()
+        df_out.columns = ["行业", "公司数", "加权PE", "中位PE"]
+        lines.append(df_out.to_csv(index=False, float_format="%.2f").strip())
+
+        # 添加分析
+        lines.append("")
+        lines.append("## 估值提示")
+        low_pe = df_l1.head(3)["行业名称"].tolist()
+        high_pe = df_l1.tail(3)["行业名称"].tolist()
+        lines.append(f"- 低估值行业: {', '.join(low_pe)}")
+        lines.append(f"- 高估值行业: {', '.join(high_pe)}")
+
+        return "\n".join(lines)
+    except Exception as e:
+        _LOGGER.warning(f"获取行业PE对比失败: {e}")
+        return f"获取行业PE对比失败: {e}"
+
+
+@mcp.tool(
+    title="A股分红历史",
+    description="获取A股个股历史分红送转数据，包括派息、送股、转增等。用于分析股息率和分红政策。",
+)
+def stock_dividend_history(
+    symbol: str = field_symbol,
+    limit: int = Field(10, description="返回数量限制"),
+):
+    """获取个股分红历史"""
+    try:
+        df = ak_cache(ak.stock_history_dividend_detail, symbol=symbol, indicator="分红", ttl=86400)
+        if df is None or df.empty:
+            return f"未获取到 {symbol} 的分红历史数据"
+
+        # 计算股息率（需要当前价格）
+        manager = get_data_manager()
+        quote = manager.get_realtime_quote(symbol)
+        current_price = quote.price if quote else None
+
+        lines = [f"# {symbol} 分红历史\n", "数据来源: akshare\n"]
+
+        # 格式化分红数据
+        df = df.head(limit)
+        lines.append("## 历史分红记录")
+        lines.append("| 公告日期 | 送股 | 转增 | 派息(元/10股) | 进度 | 除权除息日 |")
+        lines.append("|---------|------|------|--------------|------|-----------|")
+
+        total_dividend = 0
+        recent_dividend = 0
+        for _, row in df.iterrows():
+            date = str(row.get("公告日期", "-"))[:10]
+            song = row.get("送股", 0) or 0
+            zhuan = row.get("转增", 0) or 0
+            pai = row.get("派息", 0) or 0
+            status = row.get("进度", "-")
+            ex_date = str(row.get("除权除息日", "-"))[:10] if pd.notna(row.get("除权除息日")) else "-"
+
+            lines.append(f"| {date} | {song} | {zhuan} | {pai:.2f} | {status} | {ex_date} |")
+
+            if status == "实施" and pai > 0:
+                total_dividend += pai
+                if recent_dividend == 0:
+                    recent_dividend = pai
+
+        lines.append("")
+
+        # 计算股息率
+        if current_price and recent_dividend > 0:
+            dividend_yield = (recent_dividend / 10) / current_price * 100
+            lines.append(f"## 股息率分析")
+            lines.append(f"- 当前股价: {current_price:.2f}")
+            lines.append(f"- 最近一次派息: {recent_dividend:.2f}元/10股")
+            lines.append(f"- 股息率: {dividend_yield:.2f}%")
+
+        return "\n".join(lines)
+    except Exception as e:
+        _LOGGER.warning(f"获取分红历史失败: {e}")
+        return f"获取 {symbol} 分红历史失败: {e}"
+
+
+@mcp.tool(
+    title="A股基金持仓",
+    description="获取A股基金重仓股数据，显示公募基金持仓最多的股票及持仓变化。用于跟踪机构动向。",
+)
+def stock_institutional_holdings(
+    date: str = Field("", description="报告期，格式: 20240930，默认最新季度"),
+    limit: int = Field(30, description="返回数量限制"),
+):
+    """获取基金重仓股"""
+    try:
+        if not date:
+            # 计算最近季度末
+            now = datetime.now()
+            quarter_ends = ["0331", "0630", "0930", "1231"]
+            year = now.year
+            month = now.month
+            if month <= 4:
+                date = f"{year-1}1231"
+            elif month <= 7:
+                date = f"{year}0331"
+            elif month <= 10:
+                date = f"{year}0630"
+            else:
+                date = f"{year}0930"
+
+        df = ak_cache(ak.stock_report_fund_hold, symbol="基金持仓", date=date, ttl=86400)
+        if df is None or df.empty:
+            return f"未获取到基金持仓数据，报告期: {date}"
+
+        df = df.head(limit)
+
+        lines = [
+            f"# 基金重仓股 ({date})\n",
+            "数据来源: akshare\n",
+            "",
+            "## 持仓排名",
+        ]
+
+        # 格式化输出
+        cols = ["股票代码", "股票简称", "持有基金家数", "持股总数", "持股市值", "持股变化", "持股变动比例"]
+        df_out = df[cols].copy()
+        df_out["持股市值"] = (df_out["持股市值"] / 1e8).round(2)
+        df_out["持股总数"] = (df_out["持股总数"] / 1e4).round(2)
+        df_out.columns = ["代码", "名称", "基金数", "持股(万)", "市值(亿)", "变化", "变动%"]
+        lines.append(df_out.to_csv(index=False, float_format="%.2f").strip())
+
+        # 统计
+        lines.append("")
+        lines.append("## 持仓变化统计")
+        increase = len(df[df["持股变化"] == "增仓"])
+        decrease = len(df[df["持股变化"] == "减仓"])
+        new_hold = len(df[df["持股变化"] == "新进"])
+        lines.append(f"- 增仓: {increase}只, 减仓: {decrease}只, 新进: {new_hold}只")
+
+        return "\n".join(lines)
+    except Exception as e:
+        _LOGGER.warning(f"获取基金持仓失败: {e}")
+        return f"获取基金持仓失败: {e}"
+
+
+@mcp.tool(
+    title="A股财报日历",
+    description="获取A股财报披露时间表，查看即将披露财报的公司。用于跟踪财报季。",
+)
+def stock_earnings_calendar(
+    period: str = Field("", description="报告期，如: 2024年报、2024三季报，默认最新"),
+    limit: int = Field(50, description="返回数量限制"),
+):
+    """获取财报披露日历"""
+    try:
+        if not period:
+            # 自动确定当前报告期
+            now = datetime.now()
+            year = now.year
+            month = now.month
+            if month <= 4:
+                period = f"{year-1}年报"
+            elif month <= 8:
+                period = f"{year}半年报"
+            elif month <= 10:
+                period = f"{year}三季报"
+            else:
+                period = f"{year}年报"
+
+        df = ak_cache(ak.stock_report_disclosure, market="沪深京", period=period, ttl=3600)
+        if df is None or df.empty:
+            return f"未获取到财报披露数据，报告期: {period}"
+
+        lines = [
+            f"# 财报披露日历 ({period})\n",
+            "数据来源: akshare (巨潮资讯)\n",
+        ]
+
+        # 按披露日期排序，筛选未来的
+        if "首次预约时间" in df.columns:
+            df = df.sort_values("首次预约时间")
+
+        # 统计今日披露
+        today = datetime.now().strftime("%Y-%m-%d")
+        today_count = len(df[df.get("首次预约时间", "").astype(str).str.startswith(today)]) if "首次预约时间" in df.columns else 0
+
+        lines.append(f"今日披露: {today_count}家\n")
+        lines.append("## 即将披露")
+
+        df = df.head(limit)
+        cols_available = [c for c in ["股票代码", "股票简称", "首次预约时间", "实际披露时间", "修改次数"] if c in df.columns]
+        if cols_available:
+            lines.append(df[cols_available].to_csv(index=False).strip())
+        else:
+            lines.append(df.to_csv(index=False).strip())
+
+        return "\n".join(lines)
+    except Exception as e:
+        _LOGGER.warning(f"获取财报日历失败: {e}")
+        return f"获取财报日历失败: {e}"
+
+
+@mcp.tool(
+    title="A股财务指标对比",
+    description="获取A股个股详细财务指标，包括盈利能力、偿债能力、运营能力等多维度分析。",
+)
+def stock_financial_compare(
+    symbol: str = field_symbol,
+):
+    """获取个股财务指标详情"""
+    try:
+        # 获取财务分析指标
+        df = ak_cache(
+            ak.stock_financial_analysis_indicator,
+            symbol=symbol,
+            start_year=str(datetime.now().year - 2),
+            ttl=3600
+        )
+        if df is None or df.empty:
+            return f"未获取到 {symbol} 的财务指标数据"
+
+        lines = [f"# {symbol} 财务指标分析\n", "数据来源: akshare\n"]
+
+        # 取最近4个季度
+        df = df.head(4)
+
+        # 盈利能力
+        lines.append("## 盈利能力")
+        profit_cols = ["日期", "净资产收益率(%)", "销售毛利率(%)", "销售净利率(%)", "总资产利润率(%)"]
+        profit_cols = [c for c in profit_cols if c in df.columns]
+        if profit_cols:
+            lines.append(df[profit_cols].to_csv(index=False, float_format="%.2f").strip())
+
+        # 成长能力
+        lines.append("\n## 成长能力")
+        growth_cols = ["日期", "主营业务收入增长率(%)", "净利润增长率(%)", "净资产增长率(%)", "总资产增长率(%)"]
+        growth_cols = [c for c in growth_cols if c in df.columns]
+        if growth_cols:
+            lines.append(df[growth_cols].to_csv(index=False, float_format="%.2f").strip())
+
+        # 偿债能力
+        lines.append("\n## 偿债能力")
+        debt_cols = ["日期", "流动比率", "速动比率", "资产负债率(%)", "股东权益比率(%)"]
+        debt_cols = [c for c in debt_cols if c in df.columns]
+        if debt_cols:
+            lines.append(df[debt_cols].to_csv(index=False, float_format="%.2f").strip())
+
+        # 运营能力
+        lines.append("\n## 运营能力")
+        ops_cols = ["日期", "应收账款周转率(次)", "存货周转率(次)", "总资产周转率(次)"]
+        ops_cols = [c for c in ops_cols if c in df.columns]
+        if ops_cols:
+            lines.append(df[ops_cols].to_csv(index=False, float_format="%.2f").strip())
+
+        # 每股指标
+        lines.append("\n## 每股指标")
+        share_cols = ["日期", "摊薄每股收益(元)", "每股净资产_调整前(元)", "每股经营性现金流(元)"]
+        share_cols = [c for c in share_cols if c in df.columns]
+        if share_cols:
+            lines.append(df[share_cols].to_csv(index=False, float_format="%.4f").strip())
+
+        # 趋势分析
+        if len(df) >= 2:
+            lines.append("\n## 趋势分析")
+            latest = df.iloc[0]
+            prev = df.iloc[1]
+
+            if "净资产收益率(%)" in df.columns:
+                roe_change = (latest["净资产收益率(%)"] or 0) - (prev["净资产收益率(%)"] or 0)
+                trend = "↑" if roe_change > 0 else "↓" if roe_change < 0 else "→"
+                lines.append(f"- ROE变化: {trend} {abs(roe_change):.2f}%")
+
+            if "净利润增长率(%)" in df.columns and pd.notna(latest.get("净利润增长率(%)")):
+                growth = latest["净利润增长率(%)"]
+                level = "高速增长" if growth > 30 else "稳定增长" if growth > 0 else "下滑"
+                lines.append(f"- 净利润增速: {growth:.2f}% ({level})")
+
+            if "资产负债率(%)" in df.columns:
+                debt_ratio = latest["资产负债率(%)"]
+                risk = "高" if debt_ratio > 70 else "中" if debt_ratio > 50 else "低"
+                lines.append(f"- 资产负债率: {debt_ratio:.2f}% (风险{risk})")
+
+        return "\n".join(lines)
+    except Exception as e:
+        _LOGGER.warning(f"获取财务指标失败: {e}")
+        return f"获取 {symbol} 财务指标失败: {e}"
+
+
+@mcp.tool(
+    title="投资组合风险分析",
+    description="分析投资组合的风险指标，包括波动率、最大回撤、相关性矩阵、夏普比率等。",
+)
+def portfolio_risk_analysis(
+    symbols: str = Field(description="股票代码列表，逗号分隔，如: 600519,000858,601318"),
+    days: int = Field(60, description="分析周期(天)"),
+):
+    """分析投资组合风险"""
+    try:
+        codes = [s.strip() for s in symbols.split(",") if s.strip()]
+        if len(codes) < 2:
+            return "请提供至少2只股票进行组合分析"
+
+        manager = get_data_manager()
+        price_data = {}
+        names = {}
+
+        # 获取各股票历史价格
+        for code in codes[:10]:  # 限制最多10只
+            df = manager.get_daily_data(code, days=days + 10)
+            if df is not None and not df.empty:
+                df = to_chinese_columns(df)
+                price_data[code] = df["收盘"].tail(days)
+
+                # 尝试获取股票名称
+                quote = manager.get_realtime_quote(code)
+                names[code] = quote.name if quote and quote.name else code
+
+        if len(price_data) < 2:
+            return "有效股票数据不足，请检查股票代码"
+
+        # 构建价格DataFrame
+        prices_df = pd.DataFrame(price_data)
+        returns_df = prices_df.pct_change().dropna()
+
+        lines = [
+            f"# 投资组合风险分析\n",
+            f"分析周期: {days}天\n",
+            f"股票数量: {len(price_data)}只\n",
+        ]
+
+        # 1. 个股风险指标
+        lines.append("## 个股风险指标")
+        lines.append("| 代码 | 名称 | 年化波动率 | 最大回撤 | 夏普比率 |")
+        lines.append("|------|------|-----------|---------|---------|")
+
+        risk_free_rate = 0.02  # 无风险利率假设2%
+        for code in price_data.keys():
+            ret = returns_df[code]
+            prices = prices_df[code]
+
+            # 年化波动率
+            volatility = ret.std() * np.sqrt(252) * 100
+
+            # 最大回撤
+            cummax = prices.cummax()
+            drawdown = (prices - cummax) / cummax
+            max_drawdown = drawdown.min() * 100
+
+            # 夏普比率
+            annual_return = ret.mean() * 252
+            sharpe = (annual_return - risk_free_rate) / (ret.std() * np.sqrt(252)) if ret.std() > 0 else 0
+
+            name = names.get(code, code)
+            lines.append(f"| {code} | {name} | {volatility:.2f}% | {max_drawdown:.2f}% | {sharpe:.2f} |")
+
+        # 2. 相关性矩阵
+        lines.append("\n## 相关性矩阵")
+        corr_matrix = returns_df.corr()
+        # 替换代码为名称
+        corr_display = corr_matrix.copy()
+        corr_display.index = [names.get(c, c) for c in corr_display.index]
+        corr_display.columns = [names.get(c, c) for c in corr_display.columns]
+        lines.append(corr_display.to_csv(float_format="%.2f").strip())
+
+        # 3. 组合风险分析 (等权重)
+        lines.append("\n## 等权组合分析")
+        n = len(price_data)
+        weights = np.array([1/n] * n)
+        portfolio_return = returns_df.mean().values @ weights * 252
+        portfolio_vol = np.sqrt(weights @ returns_df.cov().values @ weights) * np.sqrt(252)
+        portfolio_sharpe = (portfolio_return - risk_free_rate) / portfolio_vol if portfolio_vol > 0 else 0
+
+        # 组合最大回撤
+        portfolio_value = (1 + returns_df @ weights).cumprod()
+        portfolio_cummax = portfolio_value.cummax()
+        portfolio_drawdown = (portfolio_value - portfolio_cummax) / portfolio_cummax
+        portfolio_max_dd = portfolio_drawdown.min() * 100
+
+        lines.append(f"- 预期年化收益: {portfolio_return*100:.2f}%")
+        lines.append(f"- 年化波动率: {portfolio_vol*100:.2f}%")
+        lines.append(f"- 夏普比率: {portfolio_sharpe:.2f}")
+        lines.append(f"- 最大回撤: {portfolio_max_dd:.2f}%")
+
+        # 4. 风险提示
+        lines.append("\n## 风险提示")
+
+        # 高相关性警告
+        high_corr = []
+        for i, c1 in enumerate(corr_matrix.columns):
+            for c2 in corr_matrix.columns[i+1:]:
+                if corr_matrix.loc[c1, c2] > 0.7:
+                    high_corr.append(f"{names.get(c1, c1)}-{names.get(c2, c2)}")
+        if high_corr:
+            lines.append(f"- 高相关性组合(>0.7): {', '.join(high_corr[:3])}")
+            lines.append("  建议: 考虑分散投资以降低集中风险")
+
+        # 高波动股票
+        high_vol = [names.get(c, c) for c in returns_df.columns if returns_df[c].std() * np.sqrt(252) > 0.4]
+        if high_vol:
+            lines.append(f"- 高波动股票(>40%): {', '.join(high_vol[:3])}")
+
+        # 负夏普股票
+        for code in price_data.keys():
+            ret = returns_df[code]
+            annual_return = ret.mean() * 252
+            sharpe = (annual_return - risk_free_rate) / (ret.std() * np.sqrt(252)) if ret.std() > 0 else 0
+            if sharpe < 0:
+                lines.append(f"- {names.get(code, code)} 夏普比率为负，风险收益不匹配")
+                break
+
+        return "\n".join(lines)
+    except Exception as e:
+        _LOGGER.warning(f"组合风险分析失败: {e}")
+        return f"组合风险分析失败: {e}"
 
 
 def main():

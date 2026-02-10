@@ -230,11 +230,33 @@ class DataFetcherManager:
     def __init__(self, auto_init: bool = True):
         self._fetchers: List[BaseFetcher] = []
         self._realtime_cache: Dict[str, tuple[UnifiedRealtimeQuote, float]] = {}  # (quote, timestamp)
-        self._realtime_cache_ttl: float = 60.0  # 1分钟缓存
         self._realtime_cache_maxsize: int = 500  # 最多缓存500只股票
 
         if auto_init:
             self._init_default_fetchers()
+
+    def _get_realtime_cache_ttl(self) -> float:
+        """根据交易时段动态调整实时行情缓存 TTL"""
+        now = datetime.now()
+        weekday = now.weekday()
+
+        # 周末缓存 1 小时
+        if weekday >= 5:
+            return 3600.0
+
+        hour, minute = now.hour, now.minute
+        current_time = hour * 100 + minute
+
+        # 交易时段 (9:30-11:30, 13:00-15:00)：短 TTL
+        if (930 <= current_time <= 1130) or (1300 <= current_time <= 1500):
+            return 10.0  # 10秒
+
+        # 盘前盘后 (8:00-9:30, 15:00-16:00)：中等 TTL
+        if (800 <= current_time < 930) or (1500 < current_time <= 1600):
+            return 60.0  # 1分钟
+
+        # 其他时间：长 TTL
+        return 300.0  # 5分钟
 
     def _init_default_fetchers(self):
         """初始化默认数据源"""
@@ -335,8 +357,9 @@ class DataFetcherManager:
     def _evict_realtime_cache(self):
         """清理过期和超量的实时行情缓存"""
         now = time.time()
+        ttl = self._get_realtime_cache_ttl()
         # 先清理过期条目
-        expired = [k for k, (_, ts) in self._realtime_cache.items() if now - ts >= self._realtime_cache_ttl]
+        expired = [k for k, (_, ts) in self._realtime_cache.items() if now - ts >= ttl]
         for k in expired:
             del self._realtime_cache[k]
         # 如果仍超过上限，按时间戳淘汰最旧的
@@ -408,7 +431,7 @@ class DataFetcherManager:
         # 检查缓存（每个股票独立的时间戳）
         if stock_code in self._realtime_cache:
             quote, cached_time = self._realtime_cache[stock_code]
-            if time.time() - cached_time < self._realtime_cache_ttl:
+            if time.time() - cached_time < self._get_realtime_cache_ttl():
                 return quote
 
         circuit_breaker = get_realtime_circuit_breaker()
