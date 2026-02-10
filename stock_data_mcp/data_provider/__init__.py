@@ -49,6 +49,7 @@ from .types import (
     get_board_circuit_breaker,
     get_billboard_circuit_breaker,
     get_us_financials_circuit_breaker,
+    get_margin_circuit_breaker,
 )
 
 from .base import (
@@ -97,6 +98,7 @@ __all__ = [
     "get_board_circuit_breaker",
     "get_billboard_circuit_breaker",
     "get_us_financials_circuit_breaker",
+    "get_margin_circuit_breaker",
     # 工具函数
     "safe_float",
     "safe_int",

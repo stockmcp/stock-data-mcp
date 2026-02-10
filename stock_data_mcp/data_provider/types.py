@@ -368,6 +368,11 @@ def get_us_financials_circuit_breaker() -> CircuitBreaker:
     return _get_or_create_circuit_breaker("_us_financials_circuit_breaker", 3, 600.0)
 
 
+def get_margin_circuit_breaker() -> CircuitBreaker:
+    """获取融资融券熔断器（5分钟冷却）"""
+    return _get_or_create_circuit_breaker("_margin_circuit_breaker", 3, 300.0)
+
+
 # 标准列名定义
 STANDARD_COLUMNS = ['date', 'open', 'high', 'low', 'close', 'volume', 'amount', 'pct_chg']
 

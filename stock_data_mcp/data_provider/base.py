@@ -24,6 +24,7 @@ from .types import (
     get_board_circuit_breaker,
     get_billboard_circuit_breaker,
     get_us_financials_circuit_breaker,
+    get_margin_circuit_breaker,
 )
 
 if TYPE_CHECKING:
@@ -212,6 +213,14 @@ class BaseFetcher(ABC):
 
     def get_billboard(self, days: str = "5") -> Optional[pd.DataFrame]:
         """获取龙虎榜统计（子类可覆盖）"""
+        return None
+
+    def get_margin_detail(self, stock_code: str, market: str = "sh") -> Optional[pd.DataFrame]:
+        """获取融资融券明细（子类可覆盖）"""
+        return None
+
+    def get_margin_ratio(self, stock_code: str) -> Optional[pd.DataFrame]:
+        """获取融资融券比例（子类可覆盖）"""
         return None
 
 
@@ -518,6 +527,7 @@ class DataFetcherManager:
             'board_circuit_breaker': get_board_circuit_breaker().get_status(),
             'billboard_circuit_breaker': get_billboard_circuit_breaker().get_status(),
             'us_financials_circuit_breaker': get_us_financials_circuit_breaker().get_status(),
+            'margin_circuit_breaker': get_margin_circuit_breaker().get_status(),
         }
 
     def get_fund_flow(self, stock_code: str) -> Optional[pd.DataFrame]:
@@ -655,6 +665,86 @@ class DataFetcherManager:
                 continue
 
         _LOGGER.error(f"所有数据源均无法获取龙虎榜数据")
+        return None
+
+    def get_margin_detail(self, stock_code: str, market: str = "sh") -> Optional[pd.DataFrame]:
+        """
+        获取融资融券明细，自动故障转移
+
+        优先尝试交易所明细接口，失败后尝试融资融券比例接口作为备用
+
+        Args:
+            stock_code: 股票代码
+            market: 市场 'sh'(上交所) 或 'sz'(深交所)
+
+        Returns:
+            DataFrame 或 None，包含 source 属性标记来源
+        """
+        circuit_breaker = get_margin_circuit_breaker()
+        tried_sources = []
+
+        # 第一轮：尝试获取融资融券明细
+        for fetcher in self._fetchers:
+            source_name = fetcher.name
+
+            if not circuit_breaker.is_available(source_name):
+                _LOGGER.debug(f"[{source_name}] 熔断中，跳过融资融券明细")
+                continue
+
+            try:
+                df = fetcher.get_margin_detail(stock_code, market)
+                if df is not None and not df.empty:
+                    circuit_breaker.record_success(source_name)
+                    df.attrs['source'] = source_name
+                    _LOGGER.debug(f"[{source_name}] 成功获取 {stock_code} 融资融券明细")
+                    return df
+                tried_sources.append(source_name)
+            except Exception as e:
+                circuit_breaker.record_failure(source_name, str(e))
+                _LOGGER.warning(f"[{source_name}] 获取 {stock_code} 融资融券明细失败: {e}")
+                tried_sources.append(source_name)
+                continue
+
+        # 第二轮：尝试另一个市场（可能是双重上市）
+        other_market = "sz" if market == "sh" else "sh"
+        for fetcher in self._fetchers:
+            source_name = fetcher.name
+
+            if not circuit_breaker.is_available(source_name):
+                continue
+
+            try:
+                df = fetcher.get_margin_detail(stock_code, other_market)
+                if df is not None and not df.empty:
+                    circuit_breaker.record_success(source_name)
+                    df.attrs['source'] = source_name
+                    df.attrs['market'] = other_market
+                    _LOGGER.debug(f"[{source_name}] 成功获取 {stock_code} 融资融券明细（备用市场）")
+                    return df
+            except Exception as e:
+                _LOGGER.debug(f"[{source_name}] 备用市场获取失败: {e}")
+                continue
+
+        # 第三轮：尝试融资融券比例作为备用
+        for fetcher in self._fetchers:
+            source_name = fetcher.name
+
+            if not circuit_breaker.is_available(source_name):
+                continue
+
+            try:
+                df = fetcher.get_margin_ratio(stock_code)
+                if df is not None and not df.empty:
+                    circuit_breaker.record_success(source_name)
+                    df.attrs['source'] = f"{source_name}_ratio"
+                    df.attrs['is_ratio_data'] = True
+                    _LOGGER.debug(f"[{source_name}] 成功获取 {stock_code} 融资融券比例（备用）")
+                    return df
+            except Exception as e:
+                _LOGGER.debug(f"[{source_name}] 融资融券比例获取失败: {e}")
+                continue
+
+        _LOGGER.error(f"所有数据源均无法获取 {stock_code} 融资融券数据，已尝试: {tried_sources}")
         return None
 
     # ==================== 美股多数据源方法 ====================

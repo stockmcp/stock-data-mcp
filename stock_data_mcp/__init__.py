@@ -97,8 +97,9 @@ def search(
 ):
     info = ak_search(None, keyword, market)
     if info is not None:
-        suffix = f"交易市场: {market}"
-        return "\n".join([info.to_string(), suffix])
+        lines = [f"# 搜索结果: {keyword}\n", f"数据来源: akshare\n", f"交易市场: {market}\n"]
+        lines.append(info.to_string())
+        return "\n".join(lines)
     return f"Not Found for {keyword}"
 
 
@@ -121,11 +122,15 @@ def stock_info(
         all = ak_cache(m[1], symbol=symbol, ttl=43200)
         if all is None or all.empty:
             continue
-        return all.to_string()
+        lines = [f"# {symbol} 基本信息\n", f"数据来源: akshare\n", f"市场: {market}\n"]
+        lines.append(all.to_string())
+        return "\n".join(lines)
 
     info = ak_search(symbol, market)
     if info is not None:
-        return info.to_string()
+        lines = [f"# {symbol} 基本信息\n", f"数据来源: akshare\n"]
+        lines.append(info.to_string())
+        return "\n".join(lines)
     return f"Not Found for {symbol}.{market}"
 
 
@@ -255,6 +260,8 @@ def stock_prices(
             manager = get_data_manager()
             df = manager.get_daily_data(symbol, days=limit + 62)
             if df is not None and not df.empty:
+                # 获取数据来源
+                source = df.attrs.get('source', 'DataFetcherManager')
                 # 转换为中文列名
                 df = to_chinese_columns(df)
                 # 添加换手率列（如果没有）
@@ -264,7 +271,9 @@ def stock_prices(
                 add_technical_indicators(df, df["收盘"], df["最低"], df["最高"], df.get("成交量"))
                 available_cols = [c for c in STOCK_PRICE_COLUMNS if c in df.columns]
                 all_lines = df.to_csv(columns=available_cols, index=False, float_format="%.2f").strip().split("\n")
-                return "\n".join([all_lines[0], *all_lines[-limit:]])
+                lines = [f"# {symbol} 历史价格\n", f"数据来源: {source}\n", f"市场: A股\n"]
+                lines.append("\n".join([all_lines[0], *all_lines[-limit:]]))
+                return "\n".join(lines)
         except Exception as e:
             _LOGGER.warning(f"多数据源获取失败，回退到原有逻辑: {e}")
 
@@ -281,7 +290,9 @@ def stock_prices(
         if dfs is not None and not dfs.empty:
             add_technical_indicators(dfs, dfs["收盘"], dfs["最低"], dfs["最高"], dfs.get("成交量"))
             all_lines = dfs.to_csv(columns=STOCK_PRICE_COLUMNS, index=False, float_format="%.2f").strip().split("\n")
-            return "\n".join([all_lines[0], *all_lines[-limit:]])
+            lines = [f"# {symbol} 历史价格\n", f"数据来源: akshare/yfinance\n", f"市场: 港股\n"]
+            lines.append("\n".join([all_lines[0], *all_lines[-limit:]]))
+            return "\n".join(lines)
         return f"Not Found for {symbol}.{market}"
 
     # 美股：使用带故障转移的函数
@@ -290,7 +301,9 @@ def stock_prices(
         if dfs is not None and not dfs.empty:
             add_technical_indicators(dfs, dfs["收盘"], dfs["最低"], dfs["最高"], dfs.get("成交量"))
             all_lines = dfs.to_csv(columns=STOCK_PRICE_COLUMNS, index=False, float_format="%.2f").strip().split("\n")
-            return "\n".join([all_lines[0], *all_lines[-limit:]])
+            lines = [f"# {symbol} 历史价格\n", f"数据来源: akshare/yfinance/alphavantage\n", f"市场: 美股\n"]
+            lines.append("\n".join([all_lines[0], *all_lines[-limit:]]))
+            return "\n".join(lines)
         return f"Not Found for {symbol}.{market}"
 
     # 其他市场（A股回退、ETF）
@@ -309,7 +322,9 @@ def stock_prices(
             continue
         add_technical_indicators(dfs, dfs["收盘"], dfs["最低"], dfs["最高"], dfs.get("成交量"))
         all = dfs.to_csv(columns=STOCK_PRICE_COLUMNS, index=False, float_format="%.2f").strip().split("\n")
-        return "\n".join([all[0], *all[-limit:]])
+        lines = [f"# {symbol} 历史价格\n", f"数据来源: akshare\n", f"市场: A股/ETF\n"]
+        lines.append("\n".join([all[0], *all[-limit:]]))
+        return "\n".join(lines)
     return f"Not Found for {symbol}.{market}"
 
 
@@ -350,7 +365,9 @@ def stock_news(
             if isinstance(v, dict)
         ]))
         if news:
-            return "\n".join(news[0:limit])
+            lines = [f"# {symbol} 相关新闻\n", f"数据来源: 东方财经\n"]
+            lines.extend(news[0:limit])
+            return "\n".join(lines)
         return f"未找到 {symbol} 相关新闻"
     except Exception as e:
         _LOGGER.warning(f"获取新闻失败: {e}")
@@ -398,21 +415,27 @@ def stock_indicators(
             if dfs is None or dfs.empty:
                 return f"获取A股指标失败: {symbol}"
             keys = dfs.to_csv(index=False, float_format="%.3f").strip().split("\n")
-            return "\n".join([keys[0], *keys[-15:]])
+            lines = [f"# {symbol} 财务指标\n", f"数据来源: akshare\n", f"市场: A股\n"]
+            lines.append("\n".join([keys[0], *keys[-15:]]))
+            return "\n".join(lines)
         elif market == "hk":
             # 港股
             dfs = ak_cache(ak.stock_financial_hk_analysis_indicator_em, symbol=symbol, indicator="报告期")
             if dfs is None or dfs.empty:
                 return f"获取港股指标失败: {symbol}"
             keys = dfs.to_csv(index=False, float_format="%.3f").strip().split("\n")
-            return "\n".join(keys[0:15])
+            lines = [f"# {symbol} 财务指标\n", f"数据来源: akshare\n", f"市场: 港股\n"]
+            lines.append("\n".join(keys[0:15]))
+            return "\n".join(lines)
         elif market == "us":
             # 美股
             dfs = ak_cache(ak.stock_financial_us_analysis_indicator_em, symbol=symbol, indicator="单季报")
             if dfs is None or dfs.empty:
                 return f"获取美股指标失败: {symbol}"
             keys = dfs.to_csv(index=False, float_format="%.3f").strip().split("\n")
-            return "\n".join(keys[0:15])
+            lines = [f"# {symbol} 财务指标\n", f"数据来源: akshare\n", f"市场: 美股\n"]
+            lines.append("\n".join(keys[0:15]))
+            return "\n".join(lines)
         else:
             return f"不支持的市场类型: {market}"
     except Exception as exc:
@@ -486,8 +509,9 @@ def stock_zt_pool(
         if "成交额" in dfs.columns:
             dfs.sort_values("成交额", ascending=False, inplace=True)
         dfs = dfs.head(int(limit))
-        desc = f"# {title}\n共{cnt}只股票\n"
-        return desc + dfs.to_csv(index=False, float_format="%.2f").strip()
+        lines = [f"# {title}\n", f"数据来源: akshare\n", f"共{cnt}只股票\n"]
+        lines.append(dfs.to_csv(index=False, float_format="%.2f").strip())
+        return "\n".join(lines)
     except Exception as exc:
         _LOGGER.warning(f"获取股池数据失败: {exc}")
         return f"获取股池数据失败: {exc}"
@@ -527,15 +551,24 @@ def stock_sector_fund_flow_rank(
     cate: str = Field("行业资金流", description="仅支持: {'行业资金流','概念资金流','地域资金流'}"),
 ):
     try:
-        dfs = ak_cache(ak.stock_sector_fund_flow_rank, indicator=days, sector_type=cate, ttl=1200)
+        dfs = fetch_with_retry(
+            ak.stock_sector_fund_flow_rank,
+            max_retries=3,
+            delay=3.0,
+            initial_delay=1.0,
+            indicator=days,
+            sector_type=cate
+        )
         if dfs is None or (hasattr(dfs, 'empty') and dfs.empty):
-            hint = "（提示：如选择'今日'，请确保当前为交易时段且已开盘）" if days == "今日" else ""
+            hint = "（数据源可能暂时不可用，请稍后重试）" if days == "今日" else ""
             return f"获取{cate}数据失败{hint}"
         if "今日涨跌幅" in dfs.columns:
             dfs.sort_values("今日涨跌幅", ascending=False, inplace=True)
         dfs.drop(columns=["序号"], inplace=True, errors='ignore')
         dfs = pd.concat([dfs.head(20), dfs.tail(20)])
-        return dfs.to_csv(index=False, float_format="%.2f").strip()
+        lines = [f"# {cate}\n", f"数据来源: akshare\n"]
+        lines.append(dfs.to_csv(index=False, float_format="%.2f").strip())
+        return "\n".join(lines)
     except Exception as exc:
         _LOGGER.warning(f"获取板块资金流失败: {exc}")
         return f"获取{cate}数据失败: {exc}"
@@ -577,10 +610,21 @@ def stock_north_flow(
 
         # 返回最近30天数据
         df = df.head(30)
-        return df.to_csv(index=False, float_format="%.2f").strip()
+        lines = [f"# {indicator}流向\n", f"数据来源: akshare\n"]
+        lines.append(df.to_csv(index=False, float_format="%.2f").strip())
+        return "\n".join(lines)
     except Exception as exc:
         _LOGGER.warning(f"获取北向资金失败: {exc}")
         return f"获取北向资金数据失败: {exc}"
+
+
+def _detect_stock_market(symbol: str) -> str:
+    """根据股票代码判断市场"""
+    if symbol.startswith(('6', '5')):
+        return 'sh'
+    elif symbol.startswith(('0', '3', '1', '2')):
+        return 'sz'
+    return 'sh'
 
 
 @mcp.tool(
@@ -592,22 +636,37 @@ def stock_margin_trading(
     market: str = Field("sh", description="市场: 'sh'(沪市), 'sz'(深市)"),
     limit: int = Field(30, description="返回数据条数"),
 ):
-    """获取融资融券数据"""
+    """获取融资融券数据（使用多数据源自动故障转移）"""
     try:
         if symbol:
-            # 个股融资融券数据
-            try:
-                df = ak_cache(ak.stock_margin_detail_szse, date="", ttl=1800)
-                if df is not None and not df.empty:
-                    # 尝试筛选指定股票
-                    if "证券代码" in df.columns:
-                        df = df[df["证券代码"].astype(str).str.contains(symbol)]
-                    if df.empty:
-                        return f"未找到股票 {symbol} 的融资融券数据"
-                    return df.head(limit).to_csv(index=False, float_format="%.2f").strip()
-            except Exception:
-                pass
-            return f"获取个股 {symbol} 融资融券数据失败"
+            # 个股融资融券数据：使用多数据源管理器
+            stock_market = _detect_stock_market(symbol)
+            manager = get_data_manager()
+            df = manager.get_margin_detail(symbol, stock_market)
+
+            if df is not None and not df.empty:
+                source = df.attrs.get('source', '-')
+                is_ratio = df.attrs.get('is_ratio_data', False)
+
+                if is_ratio:
+                    result = f"# {symbol} 融资融券比例\n\n"
+                    result += f"数据来源: {source}\n"
+                    result += "注：交易所明细接口暂不可用，以下为融资融券比例数据\n\n"
+                    result += df.head(limit).to_csv(index=False, float_format="%.2f").strip()
+                    return result
+                else:
+                    lines = [f"# {symbol} 融资融券\n", f"数据来源: {source}\n"]
+                    lines.append(df.head(limit).to_csv(index=False, float_format="%.2f").strip())
+                    return "\n".join(lines)
+
+            # 所有数据源都失败
+            return (
+                f"获取个股 {symbol} 融资融券数据失败\n\n"
+                f"可能原因:\n"
+                f"1. 该股票不在融资融券标的范围内\n"
+                f"2. akshare深交所接口存在兼容性问题（建议升级akshare）\n"
+                f"3. 网络连接问题"
+            )
         else:
             # 市场整体融资融券数据
             if market == "sh":
@@ -642,7 +701,9 @@ def stock_block_trade(
                 df = ak_cache(ak.stock_dzjy_mrmx, symbol=symbol, ttl=1800)
                 if df is not None and not df.empty:
                     df = df.head(limit)
-                    return df.to_csv(index=False, float_format="%.2f").strip()
+                    lines = [f"# {symbol} 大宗交易\n", f"数据来源: akshare\n"]
+                    lines.append(df.to_csv(index=False, float_format="%.2f").strip())
+                    return "\n".join(lines)
             except Exception:
                 pass
             # 尝试另一个接口
@@ -652,7 +713,9 @@ def stock_block_trade(
                     if "证券代码" in df.columns:
                         df = df[df["证券代码"].astype(str).str.contains(symbol)]
                     if not df.empty:
-                        return df.head(limit).to_csv(index=False, float_format="%.2f").strip()
+                        lines = [f"# {symbol} 大宗交易\n", f"数据来源: akshare\n"]
+                        lines.append(df.head(limit).to_csv(index=False, float_format="%.2f").strip())
+                        return "\n".join(lines)
             except Exception:
                 pass
             return f"未找到股票 {symbol} 的大宗交易数据"
@@ -662,7 +725,9 @@ def stock_block_trade(
             if df is None or df.empty:
                 return "获取大宗交易数据失败"
             df = df.head(limit)
-            return df.to_csv(index=False, float_format="%.2f").strip()
+            lines = ["# 大宗交易统计\n", "数据来源: akshare\n"]
+            lines.append(df.to_csv(index=False, float_format="%.2f").strip())
+            return "\n".join(lines)
     except Exception as exc:
         _LOGGER.warning(f"获取大宗交易失败: {exc}")
         return f"获取大宗交易数据失败: {exc}"
@@ -677,21 +742,12 @@ def stock_holder_num(
 ):
     """获取股东人数变化数据"""
     try:
-        # 尝试获取股东人数数据
-        try:
-            df = ak_cache(ak.stock_zh_a_gdhs, symbol=symbol, ttl=3600)
-            if df is not None and not df.empty:
-                return df.to_csv(index=False, float_format="%.2f").strip()
-        except Exception as e:
-            _LOGGER.debug(f"stock_zh_a_gdhs 失败: {e}")
-
-        # 尝试另一个接口
-        try:
-            df = ak_cache(ak.stock_zh_a_gdhs_detail_em, symbol=symbol, ttl=3600)
-            if df is not None and not df.empty:
-                return df.to_csv(index=False, float_format="%.2f").strip()
-        except Exception as e:
-            _LOGGER.debug(f"stock_zh_a_gdhs_detail_em 失败: {e}")
+        # 使用单股查询接口（stock_zh_a_gdhs 的 symbol 参数是日期，不是股票代码）
+        df = ak_cache(ak.stock_zh_a_gdhs_detail_em, symbol=symbol, ttl=3600)
+        if df is not None and not df.empty:
+            lines = [f"# {symbol} 股东人数\n", f"数据来源: akshare\n"]
+            lines.append(df.to_csv(index=False, float_format="%.2f").strip())
+            return "\n".join(lines)
 
         return f"未找到股票 {symbol} 的股东人数数据"
     except Exception as exc:
@@ -704,7 +760,7 @@ def stock_holder_num(
     description="获取最新的全球财经快讯",
 )
 def stock_news_global():
-    news = []
+    news = ["# 全球财经快讯\n", "数据来源: 新浪财经, NewsNow\n"]
     try:
         dfs = ak.stock_info_global_sina()
         csv = dfs.to_csv(index=False, float_format="%.2f").strip()
@@ -818,7 +874,9 @@ def okx_prices(
     dfs["成交额"] = pd.to_numeric(dfs["成交额"], errors="coerce")
     add_technical_indicators(dfs, dfs["收盘"], dfs["最低"], dfs["最高"], dfs.get("成交量"))
     all = dfs.to_csv(columns=CRYPTO_PRICE_COLUMNS, index=False, float_format="%.2f").strip().split("\n")
-    return "\n".join([all[0], *all[-limit:]])
+    lines = [f"# {instId} K线数据\n", f"数据来源: OKX\n"]
+    lines.append("\n".join([all[0], *all[-limit:]]))
+    return "\n".join(lines)
 
 
 @mcp.tool(
@@ -846,7 +904,9 @@ def okx_loan_ratios(
     dfs.columns = ["时间", "多空比"]
     dfs["时间"] = pd.to_datetime(pd.to_numeric(dfs["时间"], errors="coerce"), unit="ms")
     dfs["多空比"] = pd.to_numeric(dfs["多空比"], errors="coerce")
-    return dfs.to_csv(index=False, float_format="%.2f").strip()
+    lines = [f"# {symbol} 多空比\n", f"数据来源: OKX\n"]
+    lines.append(dfs.to_csv(index=False, float_format="%.2f").strip())
+    return "\n".join(lines)
 
 
 @mcp.tool(
@@ -876,7 +936,9 @@ def okx_taker_volume(
     dfs["时间"] = pd.to_datetime(pd.to_numeric(dfs["时间"], errors="coerce"), unit="ms")
     dfs["卖出量"] = pd.to_numeric(dfs["卖出量"], errors="coerce")
     dfs["买入量"] = pd.to_numeric(dfs["买入量"], errors="coerce")
-    return dfs.to_csv(index=False, float_format="%.2f").strip()
+    lines = [f"# {symbol} 主动买卖\n", f"数据来源: OKX\n"]
+    lines.append(dfs.to_csv(index=False, float_format="%.2f").strip())
+    return "\n".join(lines)
 
 
 @mcp.tool(
@@ -920,7 +982,7 @@ def binance_ai_report(
     report = data.get('report') or {}
     translated = report.get('translated') or report.get('original') or {}
     modules = translated.get('modules') or []
-    txts = []
+    txts = [f"# {symbol} AI分析报告\n", f"数据来源: Binance\n"]
     for module in modules:
         if tit := module.get('overview'):
             txts.append(tit)
@@ -966,10 +1028,12 @@ def stock_realtime(
             "市净率": quote.pb_ratio,
             "总市值": quote.total_mv,
             "流通市值": quote.circ_mv,
-            "数据源": quote.source.value if quote.source else "-",
         }
         df = pd.DataFrame([row])
-        return df.to_csv(index=False, float_format="%.2f").strip()
+        source = quote.source.value if quote.source else "-"
+        lines = [f"# {symbol} 实时行情\n", f"数据来源: {source}\n"]
+        lines.append(df.to_csv(index=False, float_format="%.2f").strip())
+        return "\n".join(lines)
     except Exception as e:
         _LOGGER.warning(f"获取实时行情失败: {e}")
         return f"获取 {symbol} 实时行情失败: {e}"
@@ -995,6 +1059,7 @@ def stock_chip(
         # 格式化输出（Markdown）
         lines = [
             f"# {chip.code} 筹码分布\n",
+            f"数据来源: {chip.source}\n",
             f"日期: {chip.date or '-'}\n",
             "## 筹码数据",
             f"- 获利比例: {chip.profit_ratio or '-'}%",
@@ -1038,6 +1103,7 @@ def stock_batch_realtime(
 
         # 转换为 DataFrame 输出（与 stock_realtime 字段一致）
         rows = []
+        sources = set()
         for code, quote in quotes.items():
             rows.append({
                 "代码": quote.code,
@@ -1055,9 +1121,14 @@ def stock_batch_realtime(
                 "市盈率": quote.pe_ratio,
                 "市净率": quote.pb_ratio,
             })
+            if quote.source:
+                sources.add(quote.source.value)
 
         df = pd.DataFrame(rows)
-        return df.to_csv(index=False, float_format="%.2f").strip()
+        source_str = ", ".join(sorted(sources)) if sources else "-"
+        lines = [f"# 批量实时行情\n", f"数据来源: {source_str}\n"]
+        lines.append(df.to_csv(index=False, float_format="%.2f").strip())
+        return "\n".join(lines)
     except Exception as e:
         _LOGGER.warning(f"批量获取实时行情失败: {e}")
         return f"批量获取实时行情失败: {e}"
@@ -1086,6 +1157,8 @@ def data_source_status():
             ("资金流向", status.get('fund_flow_circuit_breaker', {})),
             ("板块数据", status.get('board_circuit_breaker', {})),
             ("龙虎榜", status.get('billboard_circuit_breaker', {})),
+            ("融资融券", status.get('margin_circuit_breaker', {})),
+            ("美股基本面", status.get('us_financials_circuit_breaker', {})),
         ]:
             if breaker_status:
                 lines.append(f"\n### {name}")
@@ -1115,6 +1188,9 @@ def stock_period_stats(
         if df is None or df.empty:
             return f"Not Found for {symbol}.{market}"
 
+        # 获取数据来源
+        source = df.attrs.get('source', 'DataFetcherManager')
+
         df = to_chinese_columns(df)
         close = df["收盘"]
         high = df["最高"]
@@ -1124,7 +1200,7 @@ def stock_period_stats(
         periods = [5, 10, 20, 60, 120]
         available_periods = [p for p in periods if len(close) >= p]
 
-        lines = [f"# {symbol} 多周期统计\n"]
+        lines = [f"# {symbol} 多周期统计\n", f"数据来源: {source}\n"]
 
         # 价格统计
         lines.append("## 价格统计")
@@ -1391,31 +1467,43 @@ def multi_source_fetch(
     return None
 
 
-def fetch_with_retry(func, max_retries: int = 3, delay: float = 1.0, **kwargs):
+def fetch_with_retry(func, max_retries: int = 3, delay: float = 1.0, initial_delay: float = 0.5, **kwargs):
     """
-    带重试的数据获取
+    带重试的数据获取（含反爬虫延迟）
 
     Args:
         func: 获取函数
         max_retries: 最大重试次数
-        delay: 重试间隔（秒）
+        delay: 重试间隔基数（秒）
+        initial_delay: 首次请求前延迟（秒）
         **kwargs: 传递给函数的参数
 
     Returns:
         函数返回值或 None
     """
     import time
+    import random
+
     last_error = None
     for i in range(max_retries):
         try:
+            # 每次尝试前增加随机延迟（避免反爬虫）
+            sleep_time = initial_delay + random.uniform(0.5, 1.5) * (i + 1)
+            time.sleep(sleep_time)
+
             result = func(**kwargs)
             if result is not None:
                 return result
+        except (ConnectionError, TimeoutError, OSError) as e:
+            last_error = e
+            _LOGGER.warning(f"[{func.__name__}] 第{i+1}次尝试失败(网络): {type(e).__name__}")
+            if i < max_retries - 1:
+                time.sleep(delay * (i + 1))  # 递增延迟
         except Exception as e:
             last_error = e
             _LOGGER.warning(f"[{func.__name__}] 第{i+1}次尝试失败: {e}")
             if i < max_retries - 1:
-                time.sleep(delay * (i + 1))  # 递增延迟
+                time.sleep(delay * (i + 1))
     return None
 
 def add_technical_indicators(df, clos, lows, high, volume=None):

@@ -497,11 +497,18 @@ class AkshareFetcher(BaseFetcher):
 
         return result
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=3, min=3, max=30),
+        retry=retry_if_exception_type((ConnectionError, TimeoutError, OSError)),
+        reraise=True
+    )
     def get_chip_distribution(self, stock_code: str) -> Optional[ChipDistribution]:
-        """获取筹码分布"""
-        try:
-            self.random_sleep(1.0, 2.0)
+        """获取筹码分布（使用 @retry 装饰器）"""
+        # 增加延迟避免反爬虫
+        self.random_sleep(2.0, 4.0)
 
+        try:
             df = ak.stock_cyq_em(symbol=stock_code)
             if df is None or df.empty:
                 return None
@@ -524,7 +531,6 @@ class AkshareFetcher(BaseFetcher):
             )
 
             return chip
-
         except Exception as e:
             _LOGGER.warning(f"[{self.name}] 获取筹码分布失败: {e}")
             return None
@@ -614,4 +620,56 @@ class AkshareFetcher(BaseFetcher):
             return df
         except Exception as e:
             _LOGGER.warning(f"[{self.name}] 获取龙虎榜失败: {e}")
+            return None
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=2, min=2, max=30),
+        retry=retry_if_exception_type((ConnectionError, TimeoutError, OSError)),
+        reraise=True
+    )
+    def get_margin_detail(self, stock_code: str, market: str = "sh") -> Optional[pd.DataFrame]:
+        """
+        获取融资融券明细（带重试机制）
+
+        Args:
+            stock_code: 股票代码
+            market: 市场 'sh'(上交所) 或 'sz'(深交所)
+
+        Returns:
+            DataFrame 或 None
+        """
+        self.random_sleep(1.0, 2.0)
+
+        try:
+            if market == "sh":
+                df = ak.stock_margin_detail_sse(date="")
+                if df is not None and not df.empty and stock_code:
+                    if "标的证券代码" in df.columns:
+                        df = df[df["标的证券代码"].astype(str).str.contains(stock_code)]
+                return df
+            else:
+                df = ak.stock_margin_detail_szse(date="")
+                if df is not None and not df.empty and stock_code:
+                    if "证券代码" in df.columns:
+                        df = df[df["证券代码"].astype(str).str.contains(stock_code)]
+                return df
+        except TypeError as e:
+            # akshare深交所接口bug: Expected file path name or file-like object, got <class 'bytes'> type
+            _LOGGER.warning(f"[{self.name}] akshare深交所融资融券接口异常（可能是库版本bug）: {e}")
+            return None
+
+    def get_margin_ratio(self, stock_code: str) -> Optional[pd.DataFrame]:
+        """获取融资融券比例（备用数据源）"""
+        try:
+            self.random_sleep(0.5, 1.5)
+            df = ak.stock_margin_ratio_pa()
+            if df is not None and not df.empty:
+                if "证券代码" in df.columns:
+                    filtered = df[df["证券代码"].astype(str).str.contains(stock_code)]
+                    if not filtered.empty:
+                        return filtered
+            return None
+        except Exception as e:
+            _LOGGER.warning(f"[{self.name}] 获取融资融券比例失败: {e}")
             return None
