@@ -169,7 +169,7 @@ class YfinanceFetcher(BaseFetcher):
                 val = df.loc[index_name, col]
                 if pd.notna(val):
                     return str(int(val)) if isinstance(val, (int, float)) else str(val)
-        except Exception:
+        except Exception:  # 数据提取失败时返回 None
             pass
         return None
 
@@ -357,13 +357,13 @@ class YfinanceFetcher(BaseFetcher):
             earnings = None
             try:
                 earnings = ticker.earnings_history
-            except Exception:
+            except Exception:  # 可选数据，获取失败时继续
                 pass
 
             if earnings is None or earnings.empty:
                 try:
                     earnings = ticker.quarterly_earnings
-                except Exception:
+                except Exception:  # 尝试备选属性
                     pass
 
             if earnings is None or earnings.empty:
@@ -473,7 +473,7 @@ class YfinanceFetcher(BaseFetcher):
                 try:
                     info = ticker.info
                     name = info.get('shortName') or info.get('longName')
-                except Exception:
+                except Exception:  # 名称获取失败不影响主数据
                     pass
 
                 if price is None:
@@ -514,7 +514,7 @@ class YfinanceFetcher(BaseFetcher):
             try:
                 info = ticker.info
                 name = info.get('shortName') or info.get('longName')
-            except Exception:
+            except Exception:  # 名称获取失败不影响主数据
                 pass
 
             return UnifiedRealtimeQuote(

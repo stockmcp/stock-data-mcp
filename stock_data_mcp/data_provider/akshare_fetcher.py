@@ -547,7 +547,7 @@ class AkshareFetcher(BaseFetcher):
                     df = ak.stock_individual_fund_flow(stock=stock_code, market=market)
                     if df is not None and not df.empty:
                         break
-                except Exception:
+                except Exception:  # 尝试另一个市场
                     continue
 
             return df

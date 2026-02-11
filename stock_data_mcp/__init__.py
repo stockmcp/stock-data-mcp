@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import random
 import logging
 import threading
 import akshare as ak
@@ -155,7 +156,7 @@ def _fetch_hk_prices(symbol: str, start_date: str, period: str = "daily") -> pd.
     try:
         dfs = ak_cache(ak.stock_hk_hist, symbol=symbol, period=period, start_date=start_date, ttl=3600)
         if dfs is not None and not dfs.empty:
-            _LOGGER.info(f"[港股] akshare 获取成功: {symbol}")
+            _LOGGER.debug(f"[港股] akshare 获取成功: {symbol}")
             return dfs
     except Exception as e:
         _LOGGER.warning(f"[港股] akshare 获取失败 {symbol}: {e}")
@@ -164,7 +165,7 @@ def _fetch_hk_prices(symbol: str, start_date: str, period: str = "daily") -> pd.
     try:
         # 转换代码格式: 09988 → 9988.HK
         yf_symbol = f"{symbol.lstrip('0').zfill(4)}.HK"
-        _LOGGER.info(f"[港股] 尝试 yfinance: {yf_symbol}")
+        _LOGGER.debug(f"[港股] 尝试 yfinance: {yf_symbol}")
 
         # 转换日期格式
         start_dt = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:]}" if len(start_date) == 8 else start_date
@@ -181,7 +182,7 @@ def _fetch_hk_prices(symbol: str, start_date: str, period: str = "daily") -> pd.
             }, inplace=True)
             df["换手率"] = None
             df["日期"] = pd.to_datetime(df["日期"]).dt.strftime("%Y-%m-%d")
-            _LOGGER.info(f"[港股] yfinance 获取成功: {symbol}")
+            _LOGGER.debug(f"[港股] yfinance 获取成功: {symbol}")
             return df
     except Exception as e:
         _LOGGER.warning(f"[港股] yfinance 获取失败 {symbol}: {e}")
@@ -201,7 +202,7 @@ def _fetch_us_prices(symbol: str, start_date: str, period: str = "daily") -> pd.
     try:
         dfs = ak_cache(stock_us_daily, symbol=symbol, start_date=start_date, period=period, ttl=3600)
         if dfs is not None and not dfs.empty:
-            _LOGGER.info(f"[美股] akshare 获取成功: {symbol}")
+            _LOGGER.debug(f"[美股] akshare 获取成功: {symbol}")
             return dfs
     except Exception as e:
         _LOGGER.warning(f"[美股] akshare 获取失败 {symbol}: {e}")
@@ -209,7 +210,7 @@ def _fetch_us_prices(symbol: str, start_date: str, period: str = "daily") -> pd.
     # 2. 回退到 yfinance
     try:
         yf_symbol = symbol.upper()
-        _LOGGER.info(f"[美股] 尝试 yfinance: {yf_symbol}")
+        _LOGGER.debug(f"[美股] 尝试 yfinance: {yf_symbol}")
 
         start_dt = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:]}" if len(start_date) == 8 else start_date
 
@@ -225,7 +226,7 @@ def _fetch_us_prices(symbol: str, start_date: str, period: str = "daily") -> pd.
             }, inplace=True)
             df["换手率"] = None
             df["日期"] = pd.to_datetime(df["日期"]).dt.strftime("%Y-%m-%d")
-            _LOGGER.info(f"[美股] yfinance 获取成功: {symbol}")
+            _LOGGER.debug(f"[美股] yfinance 获取成功: {symbol}")
             return df
     except Exception as e:
         _LOGGER.warning(f"[美股] yfinance 获取失败 {symbol}: {e}")
@@ -233,7 +234,7 @@ def _fetch_us_prices(symbol: str, start_date: str, period: str = "daily") -> pd.
     # 3. 回退到 Alpha Vantage（如果配置了 API Key）
     if ALPHA_VANTAGE_API_KEY:
         try:
-            _LOGGER.info(f"[美股] 尝试 Alpha Vantage: {symbol}")
+            _LOGGER.debug(f"[美股] 尝试 Alpha Vantage: {symbol}")
             from .data_provider import AlphaVantageFetcher
             av = AlphaVantageFetcher()
             df = av._fetch_raw_data(symbol, start_date, datetime.now().strftime("%Y%m%d"))
@@ -245,7 +246,7 @@ def _fetch_us_prices(symbol: str, start_date: str, period: str = "daily") -> pd.
                     "high": "最高", "low": "最低", "volume": "成交量"
                 }, inplace=True)
                 df["换手率"] = None
-                _LOGGER.info(f"[美股] Alpha Vantage 获取成功: {symbol}")
+                _LOGGER.debug(f"[美股] Alpha Vantage 获取成功: {symbol}")
                 return df
         except Exception as e:
             _LOGGER.warning(f"[美股] Alpha Vantage 获取失败 {symbol}: {e}")
@@ -559,28 +560,65 @@ def stock_sector_fund_flow_rank(
     days: str = Field("今日", description="天数，仅支持: {'今日','5日','10日'}，如果需要获取今日数据，请确保是交易日"),
     cate: str = Field("行业资金流", description="仅支持: {'行业资金流','概念资金流','地域资金流'}"),
 ):
+    # 主数据源：东方财富板块资金流
     try:
         dfs = fetch_with_retry(
             ak.stock_sector_fund_flow_rank,
-            max_retries=3,
-            delay=3.0,
-            initial_delay=1.0,
+            max_retries=2,
+            delay=2.0,
+            initial_delay=0.5,
             indicator=days,
             sector_type=cate
         )
-        if dfs is None or (hasattr(dfs, 'empty') and dfs.empty):
-            hint = "（数据源可能暂时不可用，请稍后重试）" if days == "今日" else ""
-            return f"获取{cate}数据失败{hint}"
-        if "今日涨跌幅" in dfs.columns:
-            dfs.sort_values("今日涨跌幅", ascending=False, inplace=True)
-        dfs.drop(columns=["序号"], inplace=True, errors='ignore')
-        dfs = pd.concat([dfs.head(20), dfs.tail(20)])
-        lines = [f"# {cate}\n", f"数据来源: akshare\n"]
-        lines.append(dfs.to_csv(index=False, float_format="%.2f").strip())
-        return "\n".join(lines)
-    except Exception as exc:
-        _LOGGER.warning(f"获取板块资金流失败: {exc}")
-        return f"获取{cate}数据失败: {exc}"
+        if dfs is not None and not dfs.empty:
+            if "今日涨跌幅" in dfs.columns:
+                dfs.sort_values("今日涨跌幅", ascending=False, inplace=True)
+            dfs.drop(columns=["序号"], inplace=True, errors='ignore')
+            dfs = pd.concat([dfs.head(20), dfs.tail(20)])
+            lines = [f"# {cate}\n", f"数据来源: akshare (东方财富)\n"]
+            lines.append(dfs.to_csv(index=False, float_format="%.2f").strip())
+            return "\n".join(lines)
+    except Exception as e:
+        _LOGGER.debug(f"东方财富板块资金流获取失败: {e}")
+
+    # 备用数据源：行业板块实时行情（仅支持行业板块+今日）
+    if cate == "行业资金流":
+        try:
+            time.sleep(1)  # 防止请求过快
+            if days == "今日":
+                dfs = ak.stock_board_industry_name_em()
+            else:
+                dfs = ak.stock_board_industry_hist_em(period=days.replace("日", ""))
+            if dfs is not None and not dfs.empty:
+                if "涨跌幅" in dfs.columns:
+                    dfs.sort_values("涨跌幅", ascending=False, inplace=True)
+                elif "涨幅" in dfs.columns:
+                    dfs.sort_values("涨幅", ascending=False, inplace=True)
+                dfs.drop(columns=["排名"], inplace=True, errors='ignore')
+                dfs = pd.concat([dfs.head(20), dfs.tail(20)])
+                lines = [f"# {cate}\n", f"数据来源: akshare (东方财富-板块行情)\n"]
+                lines.append(dfs.to_csv(index=False, float_format="%.2f").strip())
+                return "\n".join(lines)
+        except Exception as e:
+            _LOGGER.debug(f"备用板块行情获取失败: {e}")
+
+    # 第三备用：概念板块
+    if cate == "概念资金流":
+        try:
+            time.sleep(1)
+            dfs = ak.stock_board_concept_name_em()
+            if dfs is not None and not dfs.empty:
+                if "涨跌幅" in dfs.columns:
+                    dfs.sort_values("涨跌幅", ascending=False, inplace=True)
+                dfs.drop(columns=["排名"], inplace=True, errors='ignore')
+                dfs = pd.concat([dfs.head(20), dfs.tail(20)])
+                lines = [f"# {cate}\n", f"数据来源: akshare (东方财富-概念板块)\n"]
+                lines.append(dfs.to_csv(index=False, float_format="%.2f").strip())
+                return "\n".join(lines)
+        except Exception as e:
+            _LOGGER.debug(f"概念板块获取失败: {e}")
+
+    return f"获取{cate}数据失败（数据源可能暂时不可用，请稍后重试）"
 
 
 @mcp.tool(
@@ -713,8 +751,8 @@ def stock_block_trade(
                     lines = [f"# {symbol} 大宗交易\n", f"数据来源: akshare\n"]
                     lines.append(df.to_csv(index=False, float_format="%.2f").strip())
                     return "\n".join(lines)
-            except Exception:
-                pass
+            except Exception as e:
+                _LOGGER.debug(f"stock_dzjy_mrmx 获取失败: {e}")
             # 尝试另一个接口
             try:
                 df = ak_cache(ak.stock_dzjy_mrtj, start_date="", end_date="", ttl=1800)
@@ -725,8 +763,8 @@ def stock_block_trade(
                         lines = [f"# {symbol} 大宗交易\n", f"数据来源: akshare\n"]
                         lines.append(df.head(limit).to_csv(index=False, float_format="%.2f").strip())
                         return "\n".join(lines)
-            except Exception:
-                pass
+            except Exception as e:
+                _LOGGER.debug(f"stock_dzjy_mrtj 获取失败: {e}")
             return f"未找到股票 {symbol} 的大宗交易数据"
         else:
             # 全市场大宗交易每日统计
@@ -780,8 +818,8 @@ def stock_news_global():
             news.append(lines[0] + ",来源")  # 添加来源列标题
             for line in lines[1:]:
                 news.append(f"{line},新浪财经")
-    except Exception:
-        pass
+    except Exception as e:
+        _LOGGER.debug(f"获取新浪财经快讯失败: {e}")
     news.extend(newsnow_news())
     return "\n".join(news)
 
@@ -982,10 +1020,12 @@ def binance_ai_report(
 
     try:
         resp = res.json() or {}
-    except Exception:
+    except Exception as e:
+        _LOGGER.debug(f"JSON 解析失败，尝试文本解析: {e}")
         try:
             resp = json.loads(res.text.strip()) or {}
-        except Exception:
+        except Exception as e2:
+            _LOGGER.debug(f"文本解析也失败: {e2}")
             return res.text
     data = resp.get('data') or {}
     report = data.get('report') or {}
@@ -1425,55 +1465,12 @@ def ak_cache(fun, *args, **kwargs) -> pd.DataFrame | None:
     all = cache.get()
     if all is None:
         try:
-            _LOGGER.info("Request akshare: %s", [key, args, kwargs])
+            _LOGGER.debug("Request akshare: %s", [key, args, kwargs])
             all = fun(*args, **kwargs)
             cache.set(all)
         except Exception as exc:
             _LOGGER.exception(str(exc))
     return all
-
-
-def multi_source_fetch(
-    sources: list[tuple[callable, dict]],
-    ttl: int = 3600,
-    cache_key: str = None,
-) -> pd.DataFrame | None:
-    """
-    多数据源获取数据，自动故障转移
-
-    Args:
-        sources: [(函数, 参数字典), ...] 按优先级排序
-        ttl: 缓存时间（秒）
-        cache_key: 缓存键（可选）
-
-    Returns:
-        DataFrame 或 None
-    """
-    # 尝试从缓存获取
-    if cache_key:
-        cache = CacheKey.init(cache_key, ttl, ttl * 7)
-        cached = cache.get()
-        if cached is not None:
-            return cached
-
-    last_error = None
-    for func, kwargs in sources:
-        try:
-            _LOGGER.info(f"多数据源获取: {func.__name__} {kwargs}")
-            result = func(**kwargs)
-            if result is not None and not (hasattr(result, 'empty') and result.empty):
-                # 缓存成功结果
-                if cache_key:
-                    cache.set(result)
-                return result
-        except Exception as e:
-            last_error = e
-            _LOGGER.warning(f"[{func.__name__}] 获取失败: {e}")
-            continue
-
-    if last_error:
-        _LOGGER.error(f"所有数据源均失败，最后错误: {last_error}")
-    return None
 
 
 def fetch_with_retry(func, max_retries: int = 3, delay: float = 1.0, initial_delay: float = 0.5, **kwargs):
@@ -1490,9 +1487,6 @@ def fetch_with_retry(func, max_retries: int = 3, delay: float = 1.0, initial_del
     Returns:
         函数返回值或 None
     """
-    import time
-    import random
-
     last_error = None
     for i in range(max_retries):
         try:

@@ -52,7 +52,7 @@ class BaostockFetcher(BaseFetcher):
         finally:
             try:
                 self._bs.logout()
-            except Exception:
+            except Exception:  # 忽略登出时的异常
                 pass
 
     def _convert_stock_code(self, stock_code: str) -> str:

@@ -56,7 +56,7 @@ class CacheKey:
                 for key in sorted_keys[:len(sorted_keys) // 2]:
                     try:
                         CacheKey.ALL[key].cache2.close()
-                    except Exception:
+                    except Exception:  # 忽略缓存关闭时的异常
                         pass
                     del CacheKey.ALL[key]
 
@@ -68,7 +68,7 @@ class CacheKey:
                 try:
                     cache.cache1.clear()
                     cache.cache2.close()
-                except Exception:
+                except Exception:  # 忽略缓存清理时的异常
                     pass
             CacheKey.ALL.clear()
 
