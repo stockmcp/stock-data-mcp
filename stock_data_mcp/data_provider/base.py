@@ -402,6 +402,7 @@ class DataFetcherManager:
                 df = fetcher.get_daily_data(stock_code, start_date, end_date, days)
                 if df is not None and not df.empty:
                     circuit_breaker.record_success(source_name)
+                    df.attrs['source'] = source_name
                     _LOGGER.debug(f"[{source_name}] 成功获取 {stock_code} 数据")
                     return df
             except Exception as e:

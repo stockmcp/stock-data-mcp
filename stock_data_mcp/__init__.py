@@ -58,6 +58,32 @@ def get_data_manager() -> DataFetcherManager:
                 _data_manager = DataFetcherManager()
     return _data_manager
 
+
+# 数据源名称映射：将 Fetcher 类名转换为友好显示名称
+_SOURCE_NAME_MAP = {
+    "EfinanceFetcher": "efinance",
+    "AkshareFetcher": "akshare",
+    "TushareFetcher": "tushare",
+    "BaostockFetcher": "baostock",
+    "YfinanceFetcher": "yfinance",
+    "AlphaVantage": "alphavantage",
+    "AlphaVantageFetcher": "alphavantage",
+}
+
+
+def format_source_name(source: str) -> str:
+    """格式化数据源名称为友好显示格式"""
+    if not source:
+        return "-"
+    # 处理带后缀的情况，如 "AkshareFetcher_ratio"
+    base_source = source.split("_")[0]
+    friendly_name = _SOURCE_NAME_MAP.get(base_source, source)
+    # 如果有后缀（如 _ratio），添加回去
+    if "_" in source:
+        suffix = source.split("_", 1)[1]
+        friendly_name = f"{friendly_name} ({suffix})"
+    return friendly_name
+
 field_symbol = Field(description="股票代码")
 field_market = Field("sh", description="股票市场，仅支持: sh(上证), sz(深证), hk(港股), us(美股), 不支持加密货币")
 
@@ -271,7 +297,7 @@ def stock_prices(
             df = manager.get_daily_data(symbol, days=limit + 62)
             if df is not None and not df.empty:
                 # 获取数据来源
-                source = df.attrs.get('source', 'DataFetcherManager')
+                source = format_source_name(df.attrs.get('source', ''))
                 # 转换为中文列名
                 df = to_chinese_columns(df)
                 # 添加换手率列（如果没有）
@@ -542,7 +568,7 @@ def stock_lhb_ggtj_sina(
         if dfs is None or dfs.empty:
             return "获取龙虎榜数据失败"
 
-        source = dfs.attrs.get('source', '-')
+        source = format_source_name(dfs.attrs.get('source', ''))
         dfs = dfs.head(int(limit))
         lines = [f"# 龙虎榜统计\n", f"数据来源: {source}\n"]
         lines.append(dfs.to_csv(index=False, float_format="%.2f").strip())
@@ -692,7 +718,7 @@ def stock_margin_trading(
             df = manager.get_margin_detail(symbol, stock_market)
 
             if df is not None and not df.empty:
-                source = df.attrs.get('source', '-')
+                source = format_source_name(df.attrs.get('source', ''))
                 is_ratio = df.attrs.get('is_ratio_data', False)
 
                 if is_ratio:
@@ -1238,7 +1264,7 @@ def stock_period_stats(
             return f"Not Found for {symbol}.{market}"
 
         # 获取数据来源
-        source = df.attrs.get('source', 'DataFetcherManager')
+        source = format_source_name(df.attrs.get('source', ''))
 
         df = to_chinese_columns(df)
         close = df["收盘"]
@@ -1319,7 +1345,7 @@ def stock_fund_flow(
         if dfs is None or dfs.empty:
             return f"Not Found for {symbol}"
 
-        source = dfs.attrs.get('source', '-')
+        source = format_source_name(dfs.attrs.get('source', ''))
         # 获取最近几天的数据
         dfs = dfs.tail(10)
 
@@ -1351,7 +1377,7 @@ def stock_sector_spot(
         lines = [f"# {symbol} 所属板块\n"]
 
         if boards is not None and not boards.empty:
-            source = boards.attrs.get('source', '-')
+            source = format_source_name(boards.attrs.get('source', ''))
             lines.append(f"数据来源: {source}\n")
             lines.append("## 所属板块")
             lines.append(boards.to_csv(index=False, float_format="%.2f").strip())
@@ -1380,7 +1406,7 @@ def stock_board_cons(
         if dfs is None or dfs.empty:
             return f"Not Found for {board_name}"
 
-        source = dfs.attrs.get('source', '-')
+        source = format_source_name(dfs.attrs.get('source', ''))
         dfs = dfs.head(int(limit))
         dfs = dfs.drop(columns=["序号"], errors='ignore')
 
@@ -2005,7 +2031,7 @@ def stock_valuation_compare(
         # 7. 格式化输出
         lines = [
             f"# {stock_name} ({symbol}) 估值对比分析\n",
-            f"数据来源: efinance + DataFetcherManager\n",
+            f"数据来源: efinance\\n",
             f"所属行业: {board_name} (共{len(peer_codes)}只股票)\n",
             "",
             "## 个股估值",
@@ -2576,6 +2602,313 @@ def portfolio_risk_analysis(
     except Exception as e:
         _LOGGER.warning(f"组合风险分析失败: {e}")
         return f"组合风险分析失败: {e}"
+
+
+@mcp.tool(
+    title="A股限售解禁日历",
+    description="获取A股限售股解禁日历，查看即将解禁的股票及解禁规模。限售解禁是重要的市场供给压力指标。",
+)
+def stock_locked_shares(
+    start_date: str = Field("", description="开始日期，格式: 20250211，默认今日"),
+    end_date: str = Field("", description="结束日期，格式: 20250311，默认未来30天"),
+    mode: str = Field("detail", description="模式: 'detail'(个股明细), 'summary'(每日汇总)"),
+    limit: int = Field(50, description="返回数量限制"),
+):
+    """获取限售解禁日历"""
+    try:
+        # 处理 Field 对象作为默认值的情况（直接调用时）
+        if hasattr(start_date, 'default'):
+            start_date = start_date.default or ""
+        if hasattr(end_date, 'default'):
+            end_date = end_date.default or ""
+        if hasattr(mode, 'default'):
+            mode = mode.default or "detail"
+
+        # 默认日期范围：今日起未来30天
+        if not start_date:
+            start_date = datetime.now().strftime("%Y%m%d")
+        if not end_date:
+            end_date = (datetime.now() + timedelta(days=30)).strftime("%Y%m%d")
+
+        if mode == "summary":
+            # 每日解禁汇总
+            df = ak_cache(
+                ak.stock_restricted_release_summary_em,
+                start_date=start_date,
+                end_date=end_date,
+                ttl=3600
+            )
+            if df is None or df.empty:
+                return f"未获取到限售解禁汇总数据 ({start_date} ~ {end_date})"
+
+            lines = [
+                f"# 限售解禁日历 (汇总)\n",
+                f"数据来源: akshare (东方财富)\n",
+                f"日期范围: {start_date} ~ {end_date}\n",
+                "",
+                "## 每日解禁汇总",
+            ]
+
+            # 选择关键列
+            cols = ["解禁时间", "当日解禁股票家数", "解禁数量", "实际解禁数量", "实际解禁市值"]
+            available_cols = [c for c in cols if c in df.columns]
+            if available_cols:
+                df = df[available_cols].head(limit)
+                # 格式化市值
+                if "实际解禁市值" in df.columns:
+                    df["实际解禁市值(亿)"] = (df["实际解禁市值"] / 1e8).round(2)
+                    df = df.drop(columns=["实际解禁市值"])
+                lines.append(df.to_csv(index=False, float_format="%.2f").strip())
+            else:
+                lines.append(df.head(limit).to_csv(index=False, float_format="%.2f").strip())
+
+            return "\n".join(lines)
+
+        else:
+            # 个股解禁明细
+            df = ak_cache(
+                ak.stock_restricted_release_detail_em,
+                start_date=start_date,
+                end_date=end_date,
+                ttl=3600
+            )
+            if df is None or df.empty:
+                return f"未获取到限售解禁明细数据 ({start_date} ~ {end_date})"
+
+            lines = [
+                f"# 限售解禁日历 (明细)\n",
+                f"数据来源: akshare (东方财富)\n",
+                f"日期范围: {start_date} ~ {end_date}\n",
+                f"共 {len(df)} 只股票即将解禁\n",
+            ]
+
+            # 按解禁市值排序
+            if "实际解禁市值" in df.columns:
+                df = df.sort_values("实际解禁市值", ascending=False)
+
+            # 选择关键列
+            cols = ["股票代码", "股票简称", "解禁时间", "限售股类型", "实际解禁数量", "实际解禁市值", "占解禁前流通市值比例"]
+            available_cols = [c for c in cols if c in df.columns]
+            if available_cols:
+                df_out = df[available_cols].head(limit).copy()
+                # 格式化市值
+                if "实际解禁市值" in df_out.columns:
+                    df_out["实际解禁市值(万)"] = (df_out["实际解禁市值"] / 1e4).round(2)
+                    df_out = df_out.drop(columns=["实际解禁市值"])
+                lines.append(df_out.to_csv(index=False, float_format="%.2f").strip())
+            else:
+                lines.append(df.head(limit).to_csv(index=False, float_format="%.2f").strip())
+
+            # 添加风险提示
+            if "占解禁前流通市值比例" in df.columns:
+                high_impact = df[df["占解禁前流通市值比例"] > 10].head(5)
+                if not high_impact.empty:
+                    lines.append("\n## 高冲击风险股票 (解禁占比>10%)")
+                    for _, row in high_impact.iterrows():
+                        code = row.get("股票代码", "-")
+                        name = row.get("股票简称", "-")
+                        ratio = row.get("占解禁前流通市值比例", 0)
+                        unlock_date = row.get("解禁时间", "-")
+                        lines.append(f"- {code} {name}: 解禁占比 {ratio:.1f}%, 解禁日 {unlock_date}")
+
+            return "\n".join(lines)
+    except Exception as e:
+        _LOGGER.warning(f"获取限售解禁日历失败: {e}")
+        return f"获取限售解禁日历失败: {e}"
+
+
+@mcp.tool(
+    title="A股股权质押",
+    description="获取A股股权质押数据，包括行业质押统计和市场整体质押比例。股权质押是衡量大股东杠杆风险的重要指标。",
+)
+def stock_pledge_ratio(
+    mode: str = Field("industry", description="模式: 'industry'(行业统计), 'market'(市场整体趋势)"),
+    limit: int = Field(30, description="返回数量限制"),
+):
+    """获取股权质押数据"""
+    try:
+        if mode == "industry":
+            # 行业质押统计（快速）
+            df = ak_cache(ak.stock_gpzy_industry_data_em, ttl=3600)
+            if df is None or df.empty:
+                return "获取行业质押数据失败"
+
+            # 按平均质押比例排序
+            if "平均质押比例" in df.columns:
+                df = df.sort_values("平均质押比例", ascending=False)
+
+            lines = [
+                "# 行业股权质押统计\n",
+                "数据来源: akshare (东方财富)\n",
+                "",
+                "## 各行业质押情况 (按质押比例降序)",
+            ]
+
+            # 选择关键列
+            cols = ["行业", "公司家数", "质押总笔数", "平均质押比例", "质押总股本", "最新质押市值"]
+            available_cols = [c for c in cols if c in df.columns]
+            if available_cols:
+                df_out = df[available_cols].head(limit).copy()
+                # 格式化市值
+                if "最新质押市值" in df_out.columns:
+                    df_out["质押市值(亿)"] = (df_out["最新质押市值"] / 1e8).round(2)
+                    df_out = df_out.drop(columns=["最新质押市值"])
+                if "质押总股本" in df_out.columns:
+                    df_out["质押股本(亿股)"] = (df_out["质押总股本"] / 1e8).round(2)
+                    df_out = df_out.drop(columns=["质押总股本"])
+                lines.append(df_out.to_csv(index=False, float_format="%.2f").strip())
+            else:
+                lines.append(df.head(limit).to_csv(index=False, float_format="%.2f").strip())
+
+            # 风险分析
+            if "平均质押比例" in df.columns:
+                high_pledge = df[df["平均质押比例"] > 20].head(5)
+                if not high_pledge.empty:
+                    lines.append("\n## 高质押风险行业 (平均质押比例>20%)")
+                    for _, row in high_pledge.iterrows():
+                        industry = row.get("行业", "-")
+                        ratio = row.get("平均质押比例", 0)
+                        count = row.get("公司家数", 0)
+                        lines.append(f"- {industry}: 平均质押 {ratio:.1f}%, 涉及 {count} 家公司")
+
+            return "\n".join(lines)
+
+        else:
+            # 市场整体质押趋势
+            df = ak_cache(ak.stock_gpzy_profile_em, ttl=3600)
+            if df is None or df.empty:
+                return "获取市场质押趋势数据失败"
+
+            lines = [
+                "# A股市场股权质押趋势\n",
+                "数据来源: akshare (东方财富)\n",
+            ]
+
+            # 取最近数据
+            df = df.tail(limit)
+
+            # 选择关键列
+            cols = ["统计时间", "A股质押总比例", "A股质押总股数", "A股质押总市值", "A股质押公司数量"]
+            available_cols = [c for c in cols if c in df.columns]
+            if available_cols:
+                df_out = df[available_cols].copy()
+                # 格式化
+                if "A股质押总市值" in df_out.columns:
+                    df_out["质押市值(万亿)"] = (df_out["A股质押总市值"] / 1e12).round(2)
+                    df_out = df_out.drop(columns=["A股质押总市值"])
+                if "A股质押总股数" in df_out.columns:
+                    df_out["质押股数(亿股)"] = (df_out["A股质押总股数"] / 1e8).round(2)
+                    df_out = df_out.drop(columns=["A股质押总股数"])
+                lines.append(df_out.to_csv(index=False, float_format="%.2f").strip())
+            else:
+                lines.append(df.to_csv(index=False, float_format="%.2f").strip())
+
+            # 趋势分析
+            if "A股质押总比例" in df.columns and len(df) >= 2:
+                latest = df.iloc[-1]["A股质押总比例"]
+                prev = df.iloc[-2]["A股质押总比例"]
+                change = latest - prev
+                trend = "上升" if change > 0 else "下降" if change < 0 else "持平"
+                lines.append(f"\n## 趋势分析")
+                lines.append(f"- 最新质押比例: {latest:.2f}%")
+                lines.append(f"- 变化趋势: {trend} ({change:+.2f}%)")
+
+            return "\n".join(lines)
+    except Exception as e:
+        _LOGGER.warning(f"获取股权质押数据失败: {e}")
+        return f"获取股权质押数据失败: {e}"
+
+
+@mcp.tool(
+    title="A股十大股东",
+    description="获取A股个股十大股东或十大流通股东信息，用于分析股权结构和机构持仓变化。",
+)
+def stock_top10_holders(
+    symbol: str = field_symbol,
+    holder_type: str = Field("main", description="股东类型: 'main'(十大股东), 'circulate'(十大流通股东)"),
+    limit: int = Field(30, description="返回数量限制（多期数据）"),
+):
+    """获取十大股东信息"""
+    try:
+        if holder_type == "circulate":
+            # 十大流通股东
+            df = ak_cache(ak.stock_circulate_stock_holder, symbol=symbol, ttl=3600)
+            title = "十大流通股东"
+            date_col = "截止日期"
+        else:
+            # 十大股东
+            df = ak_cache(ak.stock_main_stock_holder, stock=symbol, ttl=3600)
+            title = "十大股东"
+            date_col = "截至日期"
+
+        if df is None or df.empty:
+            return f"未获取到 {symbol} 的{title}数据"
+
+        lines = [
+            f"# {symbol} {title}\n",
+            "数据来源: akshare (东方财富)\n",
+        ]
+
+        # 获取最近几期数据
+        if date_col in df.columns:
+            dates = df[date_col].unique()[:3]  # 最近3期
+            for date in dates:
+                period_df = df[df[date_col] == date].head(10)  # 每期10个股东
+
+                lines.append(f"\n## {date}")
+
+                if holder_type == "circulate":
+                    # 流通股东列
+                    cols = ["编号", "股东名称", "持股数量", "占流通股比例", "股本性质"]
+                else:
+                    # 大股东列
+                    cols = ["编号", "股东名称", "持股数量", "持股比例", "股本性质"]
+
+                available_cols = [c for c in cols if c in period_df.columns]
+                if available_cols:
+                    df_out = period_df[available_cols].copy()
+                    # 格式化持股数量
+                    if "持股数量" in df_out.columns:
+                        df_out["持股(万股)"] = (df_out["持股数量"] / 1e4).round(2)
+                        df_out = df_out.drop(columns=["持股数量"])
+                    lines.append(df_out.to_csv(index=False, float_format="%.2f").strip())
+                else:
+                    lines.append(period_df.to_csv(index=False, float_format="%.2f").strip())
+
+            # 股东人数统计（如果有）
+            if "股东总数" in df.columns:
+                latest = df.iloc[0]
+                holder_count = latest.get("股东总数")
+                avg_shares = latest.get("平均持股数")
+                if holder_count:
+                    lines.append(f"\n## 股东统计")
+                    lines.append(f"- 股东总数: {holder_count}")
+                    if avg_shares:
+                        lines.append(f"- 平均持股: {avg_shares}")
+
+            # 变化分析（比较最近两期）
+            if len(dates) >= 2:
+                latest_date = dates[0]
+                prev_date = dates[1]
+                latest_holders = set(df[df[date_col] == latest_date]["股东名称"].tolist())
+                prev_holders = set(df[df[date_col] == prev_date]["股东名称"].tolist())
+
+                new_holders = latest_holders - prev_holders
+                exit_holders = prev_holders - latest_holders
+
+                if new_holders or exit_holders:
+                    lines.append(f"\n## 股东变化 ({prev_date} → {latest_date})")
+                    if new_holders:
+                        lines.append(f"- 新进股东: {', '.join(list(new_holders)[:5])}")
+                    if exit_holders:
+                        lines.append(f"- 退出股东: {', '.join(list(exit_holders)[:5])}")
+        else:
+            lines.append(df.head(limit).to_csv(index=False, float_format="%.2f").strip())
+
+        return "\n".join(lines)
+    except Exception as e:
+        _LOGGER.warning(f"获取十大股东失败: {e}")
+        return f"获取 {symbol} 十大股东失败: {e}"
 
 
 def main():

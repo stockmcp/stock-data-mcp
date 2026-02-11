@@ -8,6 +8,7 @@ import time
 from typing import Optional, Dict, List
 
 import pandas as pd
+import requests.exceptions
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from .base import BaseFetcher, DataFetchError
@@ -290,8 +291,14 @@ class EfinanceFetcher(BaseFetcher):
             _LOGGER.warning(f"[{self.name}] 获取资金流向失败: {e}")
             return None
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=2, min=2, max=30),
+        retry=retry_if_exception_type((ConnectionError, TimeoutError, OSError, requests.exceptions.RequestException)),
+        reraise=True
+    )
     def get_billboard(self, days: str = "5") -> Optional[pd.DataFrame]:
-        """获取龙虎榜统计（当日龙虎榜）"""
+        """获取龙虎榜统计（当日龙虎榜，带重试机制）"""
         if not self._available:
             return None
 

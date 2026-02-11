@@ -9,6 +9,7 @@ from typing import Optional, Dict, List
 
 import pandas as pd
 import akshare as ak
+import requests.exceptions
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from .base import BaseFetcher, DataFetchError
@@ -571,61 +572,65 @@ class AkshareFetcher(BaseFetcher):
             _LOGGER.warning(f"[{self.name}] 获取板块信息失败: {e}")
             return None
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=2, min=2, max=30),
+        retry=retry_if_exception_type((ConnectionError, TimeoutError, OSError, requests.exceptions.RequestException)),
+        reraise=True
+    )
     def get_board_cons(self, board_name: str, board_type: str = "industry") -> Optional[pd.DataFrame]:
-        """获取板块成分股（先查找精确板块名再获取成分股）"""
-        try:
-            self.random_sleep(0.5, 1.5)
+        """获取板块成分股（先查找精确板块名再获取成分股，带重试机制）"""
+        self.random_sleep(0.5, 1.5)
 
-            # 1. 先获取板块列表，查找精确匹配的板块名
-            if board_type == "concept":
-                boards = ak.stock_board_concept_name_em()
-            else:
-                boards = ak.stock_board_industry_name_em()
+        # 1. 先获取板块列表，查找精确匹配的板块名
+        if board_type == "concept":
+            boards = ak.stock_board_concept_name_em()
+        else:
+            boards = ak.stock_board_industry_name_em()
 
-            if boards is None or boards.empty:
-                _LOGGER.warning(f"[{self.name}] 获取板块列表为空")
+        if boards is None or boards.empty:
+            _LOGGER.warning(f"[{self.name}] 获取板块列表为空")
+            return None
+
+        # 2. 精确匹配或模糊匹配板块名
+        exact_match = boards[boards["板块名称"] == board_name]
+        if exact_match.empty:
+            # 尝试模糊匹配
+            fuzzy_match = boards[boards["板块名称"].str.contains(board_name, na=False)]
+            if fuzzy_match.empty:
+                _LOGGER.warning(f"[{self.name}] 未找到板块: {board_name}")
                 return None
+            matched_name = fuzzy_match.iloc[0]["板块名称"]
+            _LOGGER.info(f"[{self.name}] 模糊匹配板块: {board_name} -> {matched_name}")
+        else:
+            matched_name = exact_match.iloc[0]["板块名称"]
 
-            # 2. 精确匹配或模糊匹配板块名
-            exact_match = boards[boards["板块名称"] == board_name]
-            if exact_match.empty:
-                # 尝试模糊匹配
-                fuzzy_match = boards[boards["板块名称"].str.contains(board_name, na=False)]
-                if fuzzy_match.empty:
-                    _LOGGER.warning(f"[{self.name}] 未找到板块: {board_name}")
-                    return None
-                matched_name = fuzzy_match.iloc[0]["板块名称"]
-                _LOGGER.info(f"[{self.name}] 模糊匹配板块: {board_name} -> {matched_name}")
-            else:
-                matched_name = exact_match.iloc[0]["板块名称"]
+        # 3. 使用精确板块名获取成分股
+        self.random_sleep(0.5, 1.0)
+        if board_type == "concept":
+            df = ak.stock_board_concept_cons_em(symbol=matched_name)
+        else:
+            df = ak.stock_board_industry_cons_em(symbol=matched_name)
 
-            # 3. 使用精确板块名获取成分股
-            self.random_sleep(0.5, 1.0)
-            if board_type == "concept":
-                df = ak.stock_board_concept_cons_em(symbol=matched_name)
-            else:
-                df = ak.stock_board_industry_cons_em(symbol=matched_name)
-
-            return df
-        except Exception as e:
-            _LOGGER.warning(f"[{self.name}] 获取板块成分股失败: {e}")
-            return None
-
-    def get_billboard(self, days: str = "5") -> Optional[pd.DataFrame]:
-        """获取龙虎榜统计"""
-        try:
-            self.random_sleep(1.0, 2.0)
-
-            df = ak.stock_lhb_ggtj_sina(symbol=days)
-            return df
-        except Exception as e:
-            _LOGGER.warning(f"[{self.name}] 获取龙虎榜失败: {e}")
-            return None
+        return df
 
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=2, min=2, max=30),
-        retry=retry_if_exception_type((ConnectionError, TimeoutError, OSError)),
+        retry=retry_if_exception_type((ConnectionError, TimeoutError, OSError, requests.exceptions.RequestException)),
+        reraise=True
+    )
+    def get_billboard(self, days: str = "5") -> Optional[pd.DataFrame]:
+        """获取龙虎榜统计（带重试机制）"""
+        self.random_sleep(1.0, 2.0)
+
+        df = ak.stock_lhb_ggtj_sina(symbol=days)
+        return df
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=2, min=2, max=30),
+        retry=retry_if_exception_type((ConnectionError, TimeoutError, OSError, requests.exceptions.RequestException)),
         reraise=True
     )
     def get_margin_detail(self, stock_code: str, market: str = "sh") -> Optional[pd.DataFrame]:
