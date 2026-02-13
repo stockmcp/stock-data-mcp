@@ -6,7 +6,7 @@ MCP server for China A-shares, HK, US stocks and cryptocurrency data with multi-
 
 ## Installation
 
-### uvx
+### PyPI
 
 #### MCP Configuration
 
@@ -33,6 +33,26 @@ docker run -p 8808:8808 ghcr.io/stockmcp/stock-data-mcp
   "mcpServers": {
     "stock-data": {
       "url": "http://0.0.0.0:8808/mcp" # Streamable HTTP 
+    }
+  }
+}
+```
+
+
+###  Git Source Code (updating for developer test)
+
+- MCP 配置
+
+```json
+{
+  "mcpServers": {
+    "stock-data": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/stockmcp/stock-data-mcp",
+        "stock-data-mcp"
+      ]
     }
   }
 }

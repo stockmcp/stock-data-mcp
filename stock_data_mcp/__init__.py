@@ -183,6 +183,7 @@ def _fetch_hk_prices(symbol: str, start_date: str, period: str = "daily") -> pd.
         dfs = ak_cache(ak.stock_hk_hist, symbol=symbol, period=period, start_date=start_date, ttl=3600)
         if dfs is not None and not dfs.empty:
             _LOGGER.debug(f"[港股] akshare 获取成功: {symbol}")
+            dfs.attrs['source'] = 'akshare'
             return dfs
     except Exception as e:
         _LOGGER.warning(f"[港股] akshare 获取失败 {symbol}: {e}")
@@ -209,6 +210,7 @@ def _fetch_hk_prices(symbol: str, start_date: str, period: str = "daily") -> pd.
             df["换手率"] = None
             df["日期"] = pd.to_datetime(df["日期"]).dt.strftime("%Y-%m-%d")
             _LOGGER.debug(f"[港股] yfinance 获取成功: {symbol}")
+            df.attrs['source'] = 'yfinance'
             return df
     except Exception as e:
         _LOGGER.warning(f"[港股] yfinance 获取失败 {symbol}: {e}")
@@ -229,6 +231,7 @@ def _fetch_us_prices(symbol: str, start_date: str, period: str = "daily") -> pd.
         dfs = ak_cache(stock_us_daily, symbol=symbol, start_date=start_date, period=period, ttl=3600)
         if dfs is not None and not dfs.empty:
             _LOGGER.debug(f"[美股] akshare 获取成功: {symbol}")
+            dfs.attrs['source'] = 'akshare'
             return dfs
     except Exception as e:
         _LOGGER.warning(f"[美股] akshare 获取失败 {symbol}: {e}")
@@ -253,6 +256,7 @@ def _fetch_us_prices(symbol: str, start_date: str, period: str = "daily") -> pd.
             df["换手率"] = None
             df["日期"] = pd.to_datetime(df["日期"]).dt.strftime("%Y-%m-%d")
             _LOGGER.debug(f"[美股] yfinance 获取成功: {symbol}")
+            df.attrs['source'] = 'yfinance'
             return df
     except Exception as e:
         _LOGGER.warning(f"[美股] yfinance 获取失败 {symbol}: {e}")
@@ -273,6 +277,7 @@ def _fetch_us_prices(symbol: str, start_date: str, period: str = "daily") -> pd.
                 }, inplace=True)
                 df["换手率"] = None
                 _LOGGER.debug(f"[美股] Alpha Vantage 获取成功: {symbol}")
+                df.attrs['source'] = 'alphavantage'
                 return df
         except Exception as e:
             _LOGGER.warning(f"[美股] Alpha Vantage 获取失败 {symbol}: {e}")
@@ -326,7 +331,8 @@ def stock_prices(
         if dfs is not None and not dfs.empty:
             add_technical_indicators(dfs, dfs["收盘"], dfs["最低"], dfs["最高"], dfs.get("成交量"))
             all_lines = dfs.to_csv(columns=STOCK_PRICE_COLUMNS, index=False, float_format="%.2f").strip().split("\n")
-            lines = [f"# {symbol} 历史价格\n", f"数据来源: akshare/yfinance\n", f"市场: 港股\n"]
+            source = dfs.attrs.get('source', 'unknown')
+            lines = [f"# {symbol} 历史价格\n", f"数据来源: {source}\n", f"市场: 港股\n"]
             lines.append("\n".join([all_lines[0], *all_lines[-limit:]]))
             return "\n".join(lines)
         return f"Not Found for {symbol}.{market}"
@@ -337,7 +343,8 @@ def stock_prices(
         if dfs is not None and not dfs.empty:
             add_technical_indicators(dfs, dfs["收盘"], dfs["最低"], dfs["最高"], dfs.get("成交量"))
             all_lines = dfs.to_csv(columns=STOCK_PRICE_COLUMNS, index=False, float_format="%.2f").strip().split("\n")
-            lines = [f"# {symbol} 历史价格\n", f"数据来源: akshare/yfinance/alphavantage\n", f"市场: 美股\n"]
+            source = dfs.attrs.get('source', 'unknown')
+            lines = [f"# {symbol} 历史价格\n", f"数据来源: {source}\n", f"市场: 美股\n"]
             lines.append("\n".join([all_lines[0], *all_lines[-limit:]]))
             return "\n".join(lines)
         return f"Not Found for {symbol}.{market}"

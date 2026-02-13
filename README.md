@@ -6,7 +6,7 @@ MCP 服务器，提供 A股/港股/美股、加密货币数据查询，支持多
 
 ## 安装
 
-### uvx
+###  PyPI 
 
 - MCP 配置
 
@@ -33,6 +33,25 @@ docker run -p 8808:8808 ghcr.io/stockmcp/stock-data-mcp
   "mcpServers": {
     "stock-data": {
       "url": "http://0.0.0.0:8808/mcp" # Streamable HTTP
+    }
+  }
+}
+```
+
+###  Git 源码(开发版，会实时更新)
+
+- MCP 配置
+
+```json
+{
+  "mcpServers": {
+    "stock-data": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/stockmcp/stock-data-mcp",
+        "stock-data-mcp"
+      ]
     }
   }
 }
