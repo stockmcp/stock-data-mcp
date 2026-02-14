@@ -464,70 +464,59 @@ class AlphaVantageFetcher(BaseFetcher):
     # ==================== 辅助方法 ====================
 
     def format_overview_report(self, overview: Dict[str, Any]) -> str:
-        """格式化公司概览报告"""
+        """格式化公司概览报告 (CSV 格式)"""
         if not overview:
             return "无数据"
 
         lines = [
             f"# {overview.get('Name', '')} ({overview.get('Symbol', '')})",
-            f"",
-            f"## 基本信息",
-            f"- 行业: {overview.get('Industry', '-')}",
-            f"- 板块: {overview.get('Sector', '-')}",
-            f"- 国家: {overview.get('Country', '-')}",
-            f"- 交易所: {overview.get('Exchange', '-')}",
-            f"",
-            f"## 估值指标",
-            f"- 市值: ${self._format_number(overview.get('MarketCapitalization'))}",
-            f"- 市盈率(PE): {overview.get('PERatio', '-')}",
-            f"- 远期市盈率: {overview.get('ForwardPE', '-')}",
-            f"- 市净率(PB): {overview.get('PriceToBookRatio', '-')}",
-            f"- 市销率(PS): {overview.get('PriceToSalesRatioTTM', '-')}",
-            f"- PEG比率: {overview.get('PEGRatio', '-')}",
-            f"",
-            f"## 盈利指标",
-            f"- 每股收益(EPS): ${overview.get('EPS', '-')}",
-            f"- 每股净资产: ${overview.get('BookValue', '-')}",
-            f"- 净利润率: {overview.get('ProfitMargin', '-')}",
-            f"- 营业利润率: {overview.get('OperatingMarginTTM', '-')}",
-            f"- ROE: {overview.get('ReturnOnEquityTTM', '-')}",
-            f"- ROA: {overview.get('ReturnOnAssetsTTM', '-')}",
-            f"",
-            f"## 股息信息",
-            f"- 股息率: {overview.get('DividendYield', '-')}",
-            f"- 每股股息: ${overview.get('DividendPerShare', '-')}",
-            f"- 除息日: {overview.get('ExDividendDate', '-')}",
-            f"",
-            f"## 价格区间",
-            f"- 52周最高: ${overview.get('52WeekHigh', '-')}",
-            f"- 52周最低: ${overview.get('52WeekLow', '-')}",
-            f"- 50日均价: ${overview.get('50DayMovingAverage', '-')}",
-            f"- 200日均价: ${overview.get('200DayMovingAverage', '-')}",
-            f"",
-            f"## 分析师评级",
-            f"- 目标价: ${overview.get('AnalystTargetPrice', '-')}",
-            f"- 强烈买入: {overview.get('AnalystRatingStrongBuy', '-')}",
-            f"- 买入: {overview.get('AnalystRatingBuy', '-')}",
-            f"- 持有: {overview.get('AnalystRatingHold', '-')}",
-            f"- 卖出: {overview.get('AnalystRatingSell', '-')}",
-            f"- 强烈卖出: {overview.get('AnalystRatingStrongSell', '-')}",
+            f"# 数据来源: alphavantage",
+            "",
+            "# 基本信息",
+            "行业,板块,国家,交易所",
+            f"{overview.get('Industry', '-')},{overview.get('Sector', '-')},{overview.get('Country', '-')},{overview.get('Exchange', '-')}",
+            "",
+            "# 估值指标",
+            "市值,市盈率(PE),远期市盈率,市净率(PB),市销率(PS),PEG比率",
+            f"${self._format_number(overview.get('MarketCapitalization'))},{overview.get('PERatio', '-')},{overview.get('ForwardPE', '-')},{overview.get('PriceToBookRatio', '-')},{overview.get('PriceToSalesRatioTTM', '-')},{overview.get('PEGRatio', '-')}",
+            "",
+            "# 盈利指标",
+            "每股收益(EPS),每股净资产,净利润率,营业利润率,ROE,ROA",
+            f"${overview.get('EPS', '-')},${overview.get('BookValue', '-')},{overview.get('ProfitMargin', '-')},{overview.get('OperatingMarginTTM', '-')},{overview.get('ReturnOnEquityTTM', '-')},{overview.get('ReturnOnAssetsTTM', '-')}",
+            "",
+            "# 股息信息",
+            "股息率,每股股息,除息日",
+            f"{overview.get('DividendYield', '-')},${overview.get('DividendPerShare', '-')},{overview.get('ExDividendDate', '-')}",
+            "",
+            "# 价格区间",
+            "52周最高,52周最低,50日均价,200日均价",
+            f"${overview.get('52WeekHigh', '-')},${overview.get('52WeekLow', '-')},${overview.get('50DayMovingAverage', '-')},${overview.get('200DayMovingAverage', '-')}",
+            "",
+            "# 分析师评级",
+            "目标价,强烈买入,买入,持有,卖出,强烈卖出",
+            f"${overview.get('AnalystTargetPrice', '-')},{overview.get('AnalystRatingStrongBuy', '-')},{overview.get('AnalystRatingBuy', '-')},{overview.get('AnalystRatingHold', '-')},{overview.get('AnalystRatingSell', '-')},{overview.get('AnalystRatingStrongSell', '-')}",
         ]
         return "\n".join(lines)
 
     def format_news_report(self, news_data: Dict[str, Any], limit: int = 10) -> str:
-        """格式化新闻报告"""
+        """格式化新闻报告 (CSV 格式)"""
         if not news_data or not news_data.get("feed"):
             return "无新闻数据"
 
         lines = [
             f"# 新闻情绪分析",
-            f"",
-            f"共 {news_data.get('items_count', 0)} 条新闻",
-            f""
+            f"# 数据来源: alphavantage",
+            f"# 共 {news_data.get('items_count', 0)} 条新闻",
+            "",
+            "# 新闻列表",
+            "序号,标题,来源,时间,情绪,情绪分数",
         ]
 
+        news_rows = []
+        ticker_rows = []
+
         for i, item in enumerate(news_data["feed"][:limit]):
-            title = item.get("title", "")
+            title = item.get("title", "").replace(",", "，")  # 避免CSV分隔符冲突
             source = item.get("source", "")
             time_published = item.get("time_published", "")
             overall_sentiment = item.get("overall_sentiment_label", "")
@@ -544,31 +533,31 @@ class AlphaVantageFetcher(BaseFetcher):
                 except ValueError:
                     pass
 
-            lines.extend([
-                f"## {i + 1}. {title}",
-                f"- 来源: {source}",
-                f"- 时间: {time_published}",
-                f"- 情绪: {overall_sentiment} ({sentiment_score:.3f})",
-                f""
-            ])
+            news_rows.append(f"{i + 1},{title},{source},{time_published},{overall_sentiment},{sentiment_score:.3f}")
 
-            # 添加相关股票情绪
+            # 收集相关股票情绪
             ticker_sentiments = item.get("ticker_sentiment", [])
-            if ticker_sentiments:
-                lines.append("- 相关股票:")
-                for ts in ticker_sentiments[:3]:
-                    ticker = ts.get("ticker", "")
-                    try:
-                        relevance = float(ts.get("relevance_score", 0))
-                    except (ValueError, TypeError):
-                        relevance = 0.0
-                    try:
-                        sent_score = float(ts.get("ticker_sentiment_score", 0))
-                    except (ValueError, TypeError):
-                        sent_score = 0.0
-                    sent_label = ts.get("ticker_sentiment_label", "")
-                    lines.append(f"  - {ticker}: {sent_label} ({sent_score:.3f}), 相关度: {relevance:.3f}")
-                lines.append("")
+            for ts in ticker_sentiments[:3]:
+                ticker = ts.get("ticker", "")
+                try:
+                    relevance = float(ts.get("relevance_score", 0))
+                except (ValueError, TypeError):
+                    relevance = 0.0
+                try:
+                    sent_score = float(ts.get("ticker_sentiment_score", 0))
+                except (ValueError, TypeError):
+                    sent_score = 0.0
+                sent_label = ts.get("ticker_sentiment_label", "")
+                ticker_rows.append(f"{i + 1},{ticker},{sent_label},{sent_score:.3f},{relevance:.3f}")
+
+        lines.extend(news_rows)
+
+        # 相关股票情绪表
+        if ticker_rows:
+            lines.append("")
+            lines.append("# 相关股票情绪")
+            lines.append("新闻序号,股票,情绪,情绪分数,相关度")
+            lines.extend(ticker_rows)
 
         return "\n".join(lines)
 

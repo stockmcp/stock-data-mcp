@@ -58,6 +58,14 @@ from .base import (
     DataFetchError,
     RateLimitError,
     DataSourceUnavailableError,
+    NetworkError,
+    EmptyDataError,
+    InvalidSymbolError,
+    is_retryable,
+    should_switch_source,
+    get_retry_delay,
+    classify_exception,
+    get_error_category,
 )
 
 from .efinance_fetcher import EfinanceFetcher
@@ -89,7 +97,16 @@ __all__ = [
     "DataFetchError",
     "RateLimitError",
     "DataSourceUnavailableError",
+    "NetworkError",
+    "EmptyDataError",
+    "InvalidSymbolError",
     "AlphaVantageRateLimitError",
+    # 异常辅助函数
+    "is_retryable",
+    "should_switch_source",
+    "get_retry_delay",
+    "classify_exception",
+    "get_error_category",
     # 熔断器
     "get_realtime_circuit_breaker",
     "get_chip_circuit_breaker",

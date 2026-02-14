@@ -8,7 +8,7 @@ MCP server for China A-shares, HK, US stocks and cryptocurrency data with multi-
 
 ### PyPI
 
-#### MCP Configuration
+- MCP Configuration
 
 ```json
 {
@@ -26,7 +26,7 @@ MCP server for China A-shares, HK, US stocks and cryptocurrency data with multi-
 docker run -p 8808:8808 ghcr.io/stockmcp/stock-data-mcp
 ```
 
-#### MCP Configuration
+- MCP Configuration
 
 ```json
 {
@@ -41,7 +41,7 @@ docker run -p 8808:8808 ghcr.io/stockmcp/stock-data-mcp
 
 ###  Git Source Code (updating for developer test)
 
-- MCP 配置
+- MCP Configuration
 
 ```json
 {

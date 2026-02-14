@@ -27,6 +27,21 @@ from .types import (
     get_margin_circuit_breaker,
 )
 
+# 从统一异常模块导入（保持向后兼容）
+from ..exceptions import (
+    DataFetchError,
+    RateLimitError,
+    DataSourceUnavailableError,
+    NetworkError,
+    EmptyDataError,
+    InvalidSymbolError,
+    is_retryable,
+    should_switch_source,
+    get_retry_delay,
+    classify_exception,
+    get_error_category,
+)
+
 if TYPE_CHECKING:
     from .efinance_fetcher import EfinanceFetcher
     from .akshare_fetcher import AkshareFetcher
@@ -35,21 +50,6 @@ if TYPE_CHECKING:
     from .yfinance_fetcher import YfinanceFetcher
 
 _LOGGER = logging.getLogger(__name__)
-
-
-class DataFetchError(Exception):
-    """数据获取错误"""
-    pass
-
-
-class RateLimitError(DataFetchError):
-    """API 限流错误"""
-    pass
-
-
-class DataSourceUnavailableError(DataFetchError):
-    """数据源不可用错误"""
-    pass
 
 
 class BaseFetcher(ABC):
@@ -138,8 +138,10 @@ class BaseFetcher(ABC):
             return df
 
         except Exception as e:
-            _LOGGER.warning(f"[{self.name}] 获取 {stock_code} 数据失败: {e}")
-            raise DataFetchError(f"获取数据失败: {e}")
+            classified = classify_exception(e, source=self.name, code=stock_code)
+            category = get_error_category(classified)
+            _LOGGER.warning(f"[{self.name}] [{category}] 获取 {stock_code} 数据失败: {e}")
+            raise classified
 
     def _clean_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """清洗数据"""
@@ -519,6 +521,7 @@ class DataFetcherManager:
                         current_time = time.time()
                         for code, quote in batch_result.items():
                             self._realtime_cache[code] = (quote, current_time)
+                        self._evict_realtime_cache()  # 清理超量缓存
                         return result
                 except Exception as e:
                     _LOGGER.warning(f"[{fetcher.name}] 批量获取实时行情失败: {e}")
@@ -1028,33 +1031,34 @@ class DataFetcherManager:
         if av and source == "AlphaVantage":
             return av.format_overview_report(overview)
 
-        # 通用格式（yfinance 或其他）
+        # 通用 CSV 格式（yfinance 或其他）
         lines = [
             f"# {overview.get('Name', '')} ({overview.get('Symbol', '')})",
-            f"",
-            f"数据来源: {source}",
-            f"",
-            f"## 基本信息",
-            f"- 行业: {overview.get('Industry', '-')}",
-            f"- 板块: {overview.get('Sector', '-')}",
-            f"- 国家: {overview.get('Country', '-')}",
-            f"",
-            f"## 估值指标",
-            f"- 市值: ${self._format_large_number(overview.get('MarketCapitalization'))}",
-            f"- 市盈率(PE): {overview.get('PERatio', '-')}",
-            f"- 远期市盈率: {overview.get('ForwardPE', '-')}",
-            f"- 市净率(PB): {overview.get('PriceToBookRatio', '-')}",
-            f"",
-            f"## 盈利指标",
-            f"- 每股收益(EPS): ${overview.get('EPS', '-')}",
-            f"- 净利润率: {overview.get('ProfitMargin', '-')}",
-            f"",
-            f"## 股息信息",
-            f"- 股息率: {overview.get('DividendYield', '-')}",
-            f"",
-            f"## 价格区间",
-            f"- 52周最高: ${overview.get('52WeekHigh', '-')}",
-            f"- 52周最低: ${overview.get('52WeekLow', '-')}",
+            f"# 数据来源: {source}",
+            "",
+            "# 基本信息",
+            "行业,板块,国家,交易所",
+            f"{overview.get('Industry', '-')},{overview.get('Sector', '-')},{overview.get('Country', '-')},{overview.get('Exchange', '-')}",
+            "",
+            "# 估值指标",
+            "市值,市盈率(PE),远期市盈率,市净率(PB),市销率(PS),PEG比率",
+            f"${self._format_large_number(overview.get('MarketCapitalization'))},{overview.get('PERatio', '-')},{overview.get('ForwardPE', '-')},{overview.get('PriceToBookRatio', '-')},{overview.get('PriceToSalesRatioTTM', '-')},{overview.get('PEGRatio', '-')}",
+            "",
+            "# 盈利指标",
+            "每股收益(EPS),每股净资产,净利润率,营业利润率,ROE,ROA",
+            f"${overview.get('EPS', '-')},${overview.get('BookValue', '-')},{overview.get('ProfitMargin', '-')},{overview.get('OperatingMarginTTM', '-')},{overview.get('ReturnOnEquityTTM', '-')},{overview.get('ReturnOnAssetsTTM', '-')}",
+            "",
+            "# 股息信息",
+            "股息率,每股股息,除息日",
+            f"{overview.get('DividendYield', '-')},${overview.get('DividendPerShare', '-')},{overview.get('ExDividendDate', '-')}",
+            "",
+            "# 价格区间",
+            "52周最高,52周最低,50日均价,200日均价",
+            f"${overview.get('52WeekHigh', '-')},${overview.get('52WeekLow', '-')},${overview.get('50DayMovingAverage', '-')},${overview.get('200DayMovingAverage', '-')}",
+            "",
+            "# 分析师评级",
+            "目标价,强烈买入,买入,持有,卖出,强烈卖出",
+            f"${overview.get('AnalystTargetPrice', '-')},{overview.get('AnalystRatingStrongBuy', '-')},{overview.get('AnalystRatingBuy', '-')},{overview.get('AnalystRatingHold', '-')},{overview.get('AnalystRatingSell', '-')},{overview.get('AnalystRatingStrongSell', '-')}",
         ]
         return "\n".join(lines)
 
