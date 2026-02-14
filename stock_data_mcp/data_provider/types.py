@@ -530,3 +530,43 @@ def validate_stock_type(stock_code: str, user_market: str) -> tuple[StockType, s
         final_market = user_market
 
     return final_type, final_market
+
+
+def market_to_stock_type(market: str) -> StockType:
+    """
+    将市场字符串转换为 StockType 枚举
+
+    Args:
+        market: 市场字符串 (sh/sz/hk/us)
+
+    Returns:
+        StockType 枚举值
+    """
+    market_map = {
+        'sh': StockType.A_STOCK,
+        'sz': StockType.A_STOCK,
+        'hk': StockType.HK,
+        'us': StockType.US,
+    }
+    return market_map.get(market.lower() if market else '', StockType.UNKNOWN)
+
+
+def stock_type_to_market(stock_type: StockType, default: str = 'sh') -> str:
+    """
+    将 StockType 枚举转换为市场字符串
+
+    Args:
+        stock_type: StockType 枚举值
+        default: A股默认市场 (sh 或 sz)
+
+    Returns:
+        市场字符串
+    """
+    type_map = {
+        StockType.A_STOCK: default,
+        StockType.ETF: default,
+        StockType.HK: 'hk',
+        StockType.US: 'us',
+    }
+    return type_map.get(stock_type, default)
+

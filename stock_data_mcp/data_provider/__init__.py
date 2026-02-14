@@ -37,6 +37,8 @@ from .types import (
     is_a_stock_code,
     detect_stock_type,
     validate_stock_type,
+    market_to_stock_type,
+    stock_type_to_market,
     # 常量
     STANDARD_COLUMNS,
     COLUMN_MAPPING_TO_CN,
@@ -127,6 +129,8 @@ __all__ = [
     "is_a_stock_code",
     "detect_stock_type",
     "validate_stock_type",
+    "market_to_stock_type",
+    "stock_type_to_market",
     # 常量
     "STANDARD_COLUMNS",
     "COLUMN_MAPPING_TO_CN",

@@ -26,7 +26,7 @@ from ..core import (
     _detect_stock_market,
     USER_AGENT,
 )
-from ..data_provider import to_chinese_columns, validate_stock_type
+from ..data_provider import to_chinese_columns, validate_stock_type, market_to_stock_type, StockType
 from ..indicators import add_technical_indicators, STOCK_PRICE_COLUMNS
 
 
@@ -53,8 +53,10 @@ def stock_prices(
     period: str = Field("daily", description="周期，如: daily(日线), weekly(周线，不支持美股)"),
     limit: int = Field(30, description="返回数量(int)", strict=False),
 ):
+    stock_type = market_to_stock_type(market)
+
     # 对于 A 股，优先使用多数据源管理器
-    if market in ("sh", "sz"):
+    if stock_type == StockType.A_STOCK:
         try:
             manager = get_data_manager()
             df = manager.get_daily_data(symbol, days=limit + 62)
@@ -80,14 +82,14 @@ def stock_prices(
     start_date = (datetime.now() - timedelta(**delta)).strftime("%Y%m%d")
 
     # 港股/美股：使用统一的带故障转移函数
-    if market in ("hk", "us"):
+    if stock_type in (StockType.HK, StockType.US):
         from .us_stock import _fetch_global_prices
         dfs = _fetch_global_prices(symbol, market, start_date, period)
         if dfs is not None and not dfs.empty:
             add_technical_indicators(dfs, dfs["收盘"], dfs["最低"], dfs["最高"], dfs.get("成交量"))
             all_lines = dfs.to_csv(columns=STOCK_PRICE_COLUMNS, index=False, float_format="%.2f").strip().split("\n")
             source = dfs.attrs.get('source', 'unknown')
-            market_label = "港股" if market == "hk" else "美股"
+            market_label = "港股" if stock_type == StockType.HK else "美股"
             lines = [f"# {symbol} 历史价格", f"# 数据来源: {source}", f"# 市场: {market_label}"]
             lines.append("\n".join([all_lines[0], *all_lines[-limit:]]))
             return "\n".join(lines)
@@ -126,7 +128,9 @@ def stock_indicators(
     market: str = Field("sh", description="市场: 'sh'/'sz'(A股), 'hk'(港股), 'us'(美股)"),
 ):
     try:
-        if market in ["sh", "sz"]:
+        stock_type = market_to_stock_type(market)
+
+        if stock_type == StockType.A_STOCK:
             dfs = ak_cache(ak.stock_financial_abstract_ths, symbol=symbol)
             if dfs is None or dfs.empty:
                 return f"获取A股指标失败: {symbol}"
@@ -134,7 +138,7 @@ def stock_indicators(
             lines = [f"# {symbol} 财务指标", f"# 数据来源: akshare", f"# 市场: A股"]
             lines.append("\n".join([keys[0], *keys[-15:]]))
             return "\n".join(lines)
-        elif market == "hk":
+        elif stock_type == StockType.HK:
             dfs = ak_cache(ak.stock_financial_hk_analysis_indicator_em, symbol=symbol, indicator="报告期")
             if dfs is None or dfs.empty:
                 return f"获取港股指标失败: {symbol}"
@@ -142,7 +146,7 @@ def stock_indicators(
             lines = [f"# {symbol} 财务指标", f"# 数据来源: akshare", f"# 市场: 港股"]
             lines.append("\n".join(keys[0:15]))
             return "\n".join(lines)
-        elif market == "us":
+        elif stock_type == StockType.US:
             dfs = ak_cache(ak.stock_financial_us_analysis_indicator_em, symbol=symbol, indicator="单季报")
             if dfs is None or dfs.empty:
                 return f"获取美股指标失败: {symbol}"
