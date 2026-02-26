@@ -67,6 +67,7 @@ docker run -p 8808:8808 ghcr.io/stockmcp/stock-data-mcp
 | `ALPHA_VANTAGE_API_KEY` | Alpha Vantage API Key (enhanced US data, falls back to yfinance if not set) |
 | `OKX_BASE_URL` | OKX API proxy URL |
 | `BINANCE_BASE_URL` | Binance API proxy URL |
+| `NEWSNOW_CHANNELS` | NewsNow financial news channel list (default: `wallstreetcn-quick,cls-telegraph,jin10`) |
 
 </details>
 

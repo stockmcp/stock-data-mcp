@@ -21,6 +21,10 @@ from ..core import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# NewsNow API 配置
+_NEWSNOW_BASE_URL = "https://newsnow.busiyi.world"
+_NEWSNOW_CHANNELS_DEFAULT = "wallstreetcn-quick,cls-telegraph,jin10"
+
 
 # ==================== 个股新闻 ====================
 
@@ -118,23 +122,19 @@ def stock_news_global():
 
 def _newsnow_news(channels=None):
     """从 NewsNow 获取财经快讯"""
-    base = os.getenv("NEWSNOW_BASE_URL")
-    if not base:
-        _LOGGER.debug("NEWSNOW_BASE_URL 未配置，跳过 NewsNow 数据源")
-        return []
     if not channels:
-        channels = os.getenv("NEWSNOW_CHANNELS") or "wallstreetcn-quick,cls-telegraph,jin10"
+        channels = os.getenv("NEWSNOW_CHANNELS") or _NEWSNOW_CHANNELS_DEFAULT
     if isinstance(channels, str):
         channels = channels.split(",")
-    _LOGGER.debug(f"NewsNow 请求: base={base}, channels={channels}")
+    _LOGGER.debug(f"NewsNow 请求: base={_NEWSNOW_BASE_URL}, channels={channels}")
     all_news = []
     try:
         res = requests.post(
-            f"{base}/api/s/entire",
+            f"{_NEWSNOW_BASE_URL}/api/s/entire",
             json={"sources": channels},
             headers={
                 "User-Agent": USER_AGENT,
-                "Referer": base,
+                "Referer": _NEWSNOW_BASE_URL,
             },
             timeout=60,
         )

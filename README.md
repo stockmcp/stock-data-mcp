@@ -66,6 +66,7 @@ docker run -p 8808:8808 ghcr.io/stockmcp/stock-data-mcp
 | `ALPHA_VANTAGE_API_KEY` | Alpha Vantage API Key（美股数据增强，不配置则使用 yfinance 免费源） |
 | `OKX_BASE_URL` | OKX API 代理地址 |
 | `BINANCE_BASE_URL` | Binance API 代理地址 |
+| `NEWSNOW_CHANNELS` | NewsNow 财经快讯频道列表（默认：`wallstreetcn-quick,cls-telegraph,jin10`） |
 
 </details>
 
