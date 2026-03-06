@@ -28,7 +28,7 @@ def _fund_etf_hist_sina(symbol, market="sh", start_date="2025-01-01", period="da
     dfs = ak.fund_etf_hist_sina(symbol=f"{market}{symbol}")
     if dfs is None or dfs.empty:
         return None
-    dfs.rename(columns={"date": "日期", "open": "开盘", "close": "收盘", "high": "最高", "low": "最低", "volume": "成交量"}, inplace=True)
+    dfs = to_chinese_columns(dfs)
     dfs["换手率"] = None
     dfs.index = pd.to_datetime(dfs["日期"], errors="coerce")
     return dfs.loc[start_date:]

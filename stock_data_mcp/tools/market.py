@@ -7,7 +7,6 @@
 import os
 import json
 import logging
-import requests
 import pandas as pd
 from datetime import datetime
 from pydantic import Field
@@ -16,6 +15,7 @@ from ..core import (
     mcp,
     get_data_manager,
     ak_cache,
+    _http_session,
     USER_AGENT,
 )
 
@@ -40,17 +40,14 @@ def stock_news(
         result = ak_cache(_stock_news_em, symbol=symbol, ttl=3600)
         if result is None or (hasattr(result, 'empty') and result.empty):
             return f"未找到 {symbol} 相关新闻"
-        news = list(dict.fromkeys([
-            v["新闻内容"]
-            for v in result.to_dict(orient="records")
-            if isinstance(v, dict)
-        ]))
-        if news:
-            lines = [f"# {symbol} 相关新闻", f"# 数据来源: 东方财经"]
-            lines.append("新闻内容")
-            lines.extend(news[0:limit])
-            return "\n".join(lines)
-        return f"未找到 {symbol} 相关新闻"
+
+        # 转换为 CSV 格式
+        news_df = result[['date', '新闻内容']].head(limit).copy()
+        news_df.columns = ['时间', '内容']
+
+        lines = [f"# {symbol} 相关新闻", f"# 数据来源: 东方财经"]
+        lines.append(news_df.to_csv(index=False).strip())
+        return "\n".join(lines)
     except Exception as e:
         _LOGGER.warning(f"获取新闻失败: {e}")
         return f"获取 {symbol} 新闻失败: {e}"
@@ -59,7 +56,7 @@ def stock_news(
 def _stock_news_em(symbol, limit=20):
     """从东方财富获取个股新闻"""
     cbk = "jQuery351013927587392975826_1763361926020"
-    resp = requests.get(
+    resp = _http_session.get(
         "http://search-api-web.eastmoney.com/search/jsonp",
         headers={
             "User-Agent": USER_AGENT,
@@ -104,20 +101,25 @@ _NEWSNOW_CHANNEL_NAMES = {
 )
 def stock_news_global():
     import akshare as ak
-    news = ["# 全球财经快讯", "# 数据来源: 新浪财经, NewsNow"]
-    news.append("时间,内容,来源")
+    lines = ["# 全球财经快讯", "# 数据来源: 新浪财经, NewsNow"]
+    lines.append("时间,内容,来源")
+
+    # 获取新浪财经快讯
     try:
         dfs = ak.stock_info_global_sina()
-        csv = dfs.to_csv(index=False, float_format="%.2f").strip()
-        csv = csv.replace(datetime.now().strftime("%Y-%m-%d "), "")
-        lines = csv.split("\n")
-        if lines:
-            for line in lines[1:]:
-                news.append(f"{line},新浪财经")
+        # 取出必要列
+        sina_news = []
+        for _, row in dfs.iterrows():
+            time_str = str(row.get('时间', ''))
+            content = str(row.get('新闻', ''))
+            sina_news.append(f"{time_str},{content},新浪财经")
+        lines.extend(sina_news)
     except Exception as e:
         _LOGGER.debug(f"获取新浪财经快讯失败: {e}")
-    news.extend(_newsnow_news())
-    return "\n".join(news)
+
+    # 获取 NewsNow 快讯
+    lines.extend(_newsnow_news())
+    return "\n".join(lines)
 
 
 def _newsnow_news(channels=None):
@@ -129,7 +131,7 @@ def _newsnow_news(channels=None):
     _LOGGER.debug(f"NewsNow 请求: base={_NEWSNOW_BASE_URL}, channels={channels}")
     all_news = []
     try:
-        res = requests.post(
+        res = _http_session.post(
             f"{_NEWSNOW_BASE_URL}/api/s/entire",
             json={"sources": channels},
             headers={

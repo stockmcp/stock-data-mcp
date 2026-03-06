@@ -26,6 +26,7 @@ from .types import (
     get_us_financials_circuit_breaker,
     get_margin_circuit_breaker,
 )
+from .market_config import MarketHoursConfig, MarketType
 
 # 从统一异常模块导入（保持向后兼容）
 from ..exceptions import (
@@ -238,27 +239,36 @@ class DataFetcherManager:
             self._init_default_fetchers()
 
     def _get_realtime_cache_ttl(self) -> float:
-        """根据交易时段动态调整实时行情缓存 TTL"""
+        """
+        根据交易市场动态调整实时行情缓存 TTL
+
+        支持多市场（A股、港股、美股、加密货币），检查任何市场是否在交易时间内：
+        - 交易时间内：10秒
+        - 盘前盘后：60秒
+        - 非交易时间：300秒
+        """
+        # 检查主要市场是否在交易时间内
+        a_stock_trading = MarketHoursConfig.is_trading_time(MarketType.A_STOCK)
+        hk_stock_trading = MarketHoursConfig.is_trading_time(MarketType.HK_STOCK)
+        us_stock_trading = MarketHoursConfig.is_trading_time(MarketType.US_STOCK)
+
+        # 如果任何市场在交易，使用短 TTL
+        if a_stock_trading or hk_stock_trading or us_stock_trading:
+            return 10.0
+
+        # 检查是否在盘前盘后时间
         now = datetime.now()
-        weekday = now.weekday()
-
-        # 周末缓存 1 小时
-        if weekday >= 5:
-            return 3600.0
-
         hour, minute = now.hour, now.minute
         current_time = hour * 100 + minute
 
-        # 交易时段 (9:30-11:30, 13:00-15:00)：短 TTL
-        if (930 <= current_time <= 1130) or (1300 <= current_time <= 1500):
-            return 10.0  # 10秒
+        # A 股盘前盘后 (8:00-9:30, 15:00-16:00)
+        # 港股盘前盘后 (8:00-9:30, 16:00-17:00)
+        # 美股盘前盘后 (7:00-9:30, 16:00-18:00)
+        if (800 <= current_time < 930) or (1500 < current_time <= 1800):
+            return 60.0
 
-        # 盘前盘后 (8:00-9:30, 15:00-16:00)：中等 TTL
-        if (800 <= current_time < 930) or (1500 < current_time <= 1600):
-            return 60.0  # 1分钟
-
-        # 其他时间：长 TTL
-        return 300.0  # 5分钟
+        # 非交易时间，长 TTL
+        return 300.0
 
     def _init_default_fetchers(self):
         """初始化默认数据源"""
@@ -363,12 +373,12 @@ class DataFetcherManager:
         # 先清理过期条目
         expired = [k for k, (_, ts) in self._realtime_cache.items() if now - ts >= ttl]
         for k in expired:
-            del self._realtime_cache[k]
+            self._realtime_cache.pop(k, None)
         # 如果仍超过上限，按时间戳淘汰最旧的
         if len(self._realtime_cache) > self._realtime_cache_maxsize:
             sorted_keys = sorted(self._realtime_cache, key=lambda k: self._realtime_cache[k][1])
             for k in sorted_keys[:len(self._realtime_cache) - self._realtime_cache_maxsize]:
-                del self._realtime_cache[k]
+                self._realtime_cache.pop(k, None)
 
     def get_daily_data(
         self,

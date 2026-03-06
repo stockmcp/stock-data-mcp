@@ -226,151 +226,187 @@ class CircuitBreaker:
         self.cooldown_seconds = cooldown_seconds
         self.half_open_max_calls = half_open_max_calls
         self._states: Dict[str, SourceState] = {}
+        self._lock = threading.Lock()
 
     def _get_state(self, source: str) -> SourceState:
-        """获取或创建数据源状态"""
+        """获取或创建数据源状态（调用方须持有 _lock）"""
         if source not in self._states:
             self._states[source] = SourceState()
         return self._states[source]
 
     def is_available(self, source: str) -> bool:
         """检查数据源是否可用"""
-        state = self._get_state(source)
+        with self._lock:
+            state = self._get_state(source)
 
-        if state.state == CircuitBreakerState.CLOSED:
-            return True
-
-        if state.state == CircuitBreakerState.OPEN:
-            # 检查是否可以进入半开状态
-            if time.time() - state.last_failure_time >= self.cooldown_seconds:
-                state.state = CircuitBreakerState.HALF_OPEN
-                state.half_open_calls = 0
-                _LOGGER.info(f"数据源 {source} 进入恢复状态")
+            if state.state == CircuitBreakerState.CLOSED:
                 return True
+
+            if state.state == CircuitBreakerState.OPEN:
+                # 检查是否可以进入半开状态
+                if time.time() - state.last_failure_time >= self.cooldown_seconds:
+                    state.state = CircuitBreakerState.HALF_OPEN
+                    state.half_open_calls = 0
+                    _LOGGER.info(f"数据源 {source} 进入恢复状态")
+                    return True
+                return False
+
+            if state.state == CircuitBreakerState.HALF_OPEN:
+                return state.half_open_calls < self.half_open_max_calls
+
             return False
-
-        if state.state == CircuitBreakerState.HALF_OPEN:
-            return state.half_open_calls < self.half_open_max_calls
-
-        return False
 
     def record_success(self, source: str):
         """记录成功"""
-        state = self._get_state(source)
+        with self._lock:
+            state = self._get_state(source)
 
-        if state.state == CircuitBreakerState.HALF_OPEN:
-            state.state = CircuitBreakerState.CLOSED
-            state.failure_count = 0
-            state.last_error = None
-            _LOGGER.info(f"数据源 {source} 恢复正常")
-        elif state.state == CircuitBreakerState.CLOSED:
-            state.failure_count = 0
+            if state.state == CircuitBreakerState.HALF_OPEN:
+                state.state = CircuitBreakerState.CLOSED
+                state.failure_count = 0
+                state.last_error = None
+                _LOGGER.info(f"数据源 {source} 恢复正常")
+            elif state.state == CircuitBreakerState.CLOSED:
+                state.failure_count = 0
 
     def record_failure(self, source: str, error: Optional[str] = None):
         """记录失败"""
-        state = self._get_state(source)
-        state.failure_count += 1
-        state.last_failure_time = time.time()
-        state.last_error = error
+        with self._lock:
+            state = self._get_state(source)
+            state.failure_count += 1
+            state.last_failure_time = time.time()
+            state.last_error = error
 
-        if state.state == CircuitBreakerState.HALF_OPEN:
-            state.half_open_calls += 1
-            if state.half_open_calls >= self.half_open_max_calls:
-                state.state = CircuitBreakerState.OPEN
-                _LOGGER.warning(f"数据源 {source} 恢复失败，重新熔断")
-        elif state.state == CircuitBreakerState.CLOSED:
-            if state.failure_count >= self.failure_threshold:
-                state.state = CircuitBreakerState.OPEN
-                _LOGGER.warning(f"数据源 {source} 触发熔断，错误: {error}")
+            if state.state == CircuitBreakerState.HALF_OPEN:
+                state.half_open_calls += 1
+                if state.half_open_calls >= self.half_open_max_calls:
+                    state.state = CircuitBreakerState.OPEN
+                    _LOGGER.warning(f"数据源 {source} 恢复失败，重新熔断")
+            elif state.state == CircuitBreakerState.CLOSED:
+                if state.failure_count >= self.failure_threshold:
+                    state.state = CircuitBreakerState.OPEN
+                    _LOGGER.warning(f"数据源 {source} 触发熔断，错误: {error}")
 
     def get_status(self) -> Dict[str, Dict[str, Any]]:
         """获取所有数据源状态"""
-        return {
-            source: {
-                'state': state.state.value,
-                'failure_count': state.failure_count,
-                'last_error': state.last_error,
+        with self._lock:
+            return {
+                source: {
+                    'state': state.state.value,
+                    'failure_count': state.failure_count,
+                    'last_error': state.last_error,
+                }
+                for source, state in self._states.items()
             }
-            for source, state in self._states.items()
-        }
 
     def reset(self, source: Optional[str] = None):
         """重置数据源状态"""
-        if source:
-            if source in self._states:
-                self._states[source] = SourceState()
-        else:
-            self._states.clear()
+        with self._lock:
+            if source:
+                if source in self._states:
+                    self._states[source] = SourceState()
+            else:
+                self._states.clear()
 
 
-# 全局熔断器实例
-_circuit_breaker_lock = threading.Lock()
-_realtime_circuit_breaker: Optional[CircuitBreaker] = None
-_chip_circuit_breaker: Optional[CircuitBreaker] = None
-_daily_circuit_breaker: Optional[CircuitBreaker] = None
-_fund_flow_circuit_breaker: Optional[CircuitBreaker] = None
-_board_circuit_breaker: Optional[CircuitBreaker] = None
-_billboard_circuit_breaker: Optional[CircuitBreaker] = None
-_us_financials_circuit_breaker: Optional[CircuitBreaker] = None
+# 熔断器注册表
+class CircuitBreakerRegistry:
+    """熔断器集中管理和存储"""
+
+    def __init__(self):
+        self._breakers: Dict[str, CircuitBreaker] = {}
+        self._lock = threading.Lock()
+
+    def get_or_create(
+        self,
+        name: str,
+        failure_threshold: int = 3,
+        cooldown_seconds: float = 300.0
+    ) -> CircuitBreaker:
+        """线程安全地获取或创建熔断器"""
+        if name in self._breakers:
+            return self._breakers[name]
+
+        with self._lock:
+            if name in self._breakers:
+                return self._breakers[name]
+            breaker = CircuitBreaker(
+                failure_threshold=failure_threshold,
+                cooldown_seconds=cooldown_seconds,
+            )
+            self._breakers[name] = breaker
+            return breaker
+
+    def get(self, name: str) -> Optional[CircuitBreaker]:
+        """获取已存在的熔断器"""
+        return self._breakers.get(name)
+
+    def reset(self, name: Optional[str] = None):
+        """重置熔断器"""
+        with self._lock:
+            if name:
+                if name in self._breakers:
+                    self._breakers[name].reset()
+            else:
+                for breaker in self._breakers.values():
+                    breaker.reset()
+
+    def get_all_status(self) -> Dict[str, Dict[str, Any]]:
+        """获取所有熔断器的状态"""
+        return {name: breaker.get_status() for name, breaker in self._breakers.items()}
+
+
+# 全局熔断器注册表实例
+_circuit_breaker_registry = CircuitBreakerRegistry()
 
 
 def _get_or_create_circuit_breaker(
-    attr_name: str,
+    name: str,
     failure_threshold: int = 3,
     cooldown_seconds: float = 300.0
 ) -> CircuitBreaker:
-    """线程安全地获取或创建熔断器实例"""
-    current = globals().get(attr_name)
-    if current is None:
-        with _circuit_breaker_lock:
-            current = globals().get(attr_name)
-            if current is None:
-                current = CircuitBreaker(
-                    failure_threshold=failure_threshold,
-                    cooldown_seconds=cooldown_seconds,
-                )
-                globals()[attr_name] = current
-    return current
+    """线程安全地获取或创建熔断器实例（使用注册表）"""
+    return _circuit_breaker_registry.get_or_create(name, failure_threshold, cooldown_seconds)
 
 
 def get_realtime_circuit_breaker() -> CircuitBreaker:
     """获取实时行情熔断器（5分钟冷却）"""
-    return _get_or_create_circuit_breaker("_realtime_circuit_breaker", 3, 300.0)
+    return _get_or_create_circuit_breaker("realtime", 3, 300.0)
 
 
 def get_chip_circuit_breaker() -> CircuitBreaker:
     """获取筹码分布熔断器（10分钟冷却）"""
-    return _get_or_create_circuit_breaker("_chip_circuit_breaker", 2, 600.0)
+    return _get_or_create_circuit_breaker("chip", 2, 600.0)
 
 
 def get_daily_circuit_breaker() -> CircuitBreaker:
     """获取日线数据熔断器（5分钟冷却）"""
-    return _get_or_create_circuit_breaker("_daily_circuit_breaker", 3, 300.0)
+    return _get_or_create_circuit_breaker("daily", 3, 300.0)
 
 
 def get_fund_flow_circuit_breaker() -> CircuitBreaker:
     """获取资金流向熔断器（5分钟冷却）"""
-    return _get_or_create_circuit_breaker("_fund_flow_circuit_breaker", 3, 300.0)
+    return _get_or_create_circuit_breaker("fund_flow", 3, 300.0)
 
 
 def get_board_circuit_breaker() -> CircuitBreaker:
     """获取板块数据熔断器（10分钟冷却）"""
-    return _get_or_create_circuit_breaker("_board_circuit_breaker", 3, 600.0)
+    return _get_or_create_circuit_breaker("board", 3, 600.0)
 
 
 def get_billboard_circuit_breaker() -> CircuitBreaker:
     """获取龙虎榜熔断器（5分钟冷却）"""
-    return _get_or_create_circuit_breaker("_billboard_circuit_breaker", 3, 300.0)
+    return _get_or_create_circuit_breaker("billboard", 3, 300.0)
 
 
 def get_us_financials_circuit_breaker() -> CircuitBreaker:
     """获取美股基本面熔断器（10分钟冷却，适应 API 限流）"""
-    return _get_or_create_circuit_breaker("_us_financials_circuit_breaker", 3, 600.0)
+    return _get_or_create_circuit_breaker("us_financials", 3, 600.0)
 
 
 def get_margin_circuit_breaker() -> CircuitBreaker:
     """获取融资融券熔断器（5分钟冷却）"""
-    return _get_or_create_circuit_breaker("_margin_circuit_breaker", 3, 300.0)
+    return _get_or_create_circuit_breaker("margin", 3, 300.0)
 
 
 # 标准列名定义
@@ -401,7 +437,22 @@ COLUMN_MAPPING_TO_EN = {v: k for k, v in COLUMN_MAPPING_TO_CN.items()}
 
 def to_chinese_columns(df: pd.DataFrame) -> pd.DataFrame:
     """将 DataFrame 的英文列名转换为中文"""
-    return df.rename(columns=COLUMN_MAPPING_TO_CN)
+    # 先尝试直接映射
+    mapped = df.rename(columns=COLUMN_MAPPING_TO_CN)
+
+    # 对于未映射的列，尝试小写匹配
+    remaining_cols = {}
+    for col in mapped.columns:
+        if col not in df.columns or col in COLUMN_MAPPING_TO_CN:
+            continue
+        col_lower = col.lower()
+        if col_lower in COLUMN_MAPPING_TO_CN:
+            remaining_cols[col] = COLUMN_MAPPING_TO_CN[col_lower]
+
+    if remaining_cols:
+        mapped = mapped.rename(columns=remaining_cols)
+
+    return mapped
 
 
 def to_english_columns(df: pd.DataFrame) -> pd.DataFrame:

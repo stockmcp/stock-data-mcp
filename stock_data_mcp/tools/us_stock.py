@@ -55,7 +55,7 @@ def _fetch_global_prices(symbol: str, market: str, start_date: str, period: str 
             df = df.reset_index()
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = [col[0] if isinstance(col, tuple) else col for col in df.columns]
-            df.rename(columns={"Date": "日期", "Open": "开盘", "Close": "收盘", "High": "最高", "Low": "最低", "Volume": "成交量"}, inplace=True)
+            df = to_chinese_columns(df)
             df["换手率"] = None
             df["日期"] = pd.to_datetime(df["日期"]).dt.strftime("%Y-%m-%d")
             df.attrs['source'] = 'yfinance'
@@ -71,7 +71,7 @@ def _fetch_global_prices(symbol: str, market: str, start_date: str, period: str 
             df = av._fetch_raw_data(symbol, start_date, datetime.now().strftime("%Y%m%d"))
             if df is not None and not df.empty:
                 df = av._normalize_data(df, symbol)
-                df.rename(columns={"date": "日期", "open": "开盘", "close": "收盘", "high": "最高", "low": "最低", "volume": "成交量"}, inplace=True)
+                df = to_chinese_columns(df)
                 df["换手率"] = None
                 df.attrs['source'] = 'alphavantage'
                 return df
@@ -87,7 +87,7 @@ def _stock_us_daily(symbol, start_date="2025-01-01", period="daily"):
     dfs = ak.stock_us_daily(symbol=symbol)
     if dfs is None or dfs.empty:
         return None
-    dfs.rename(columns={"date": "日期", "open": "开盘", "close": "收盘", "high": "最高", "low": "最低", "volume": "成交量"}, inplace=True)
+    dfs = to_chinese_columns(dfs)
     dfs["换手率"] = None
     dfs.index = pd.to_datetime(dfs["日期"], errors="coerce")
     return dfs.loc[start_date:]

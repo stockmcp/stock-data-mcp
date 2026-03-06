@@ -130,6 +130,128 @@ def stock_screener(
 
 # ==================== 交易信号 ====================
 
+
+def _generate_trading_signals(df: pd.DataFrame, close: pd.Series, volume: pd.Series = None) -> tuple[list, int, int]:
+    """
+    生成交易信号（内部函数）
+
+    Args:
+        df: 完整的 DataFrame（包含技术指标）
+        close: 收盘价 Series
+        volume: 成交量 Series（可选）
+
+    Returns:
+        (signals 列表, buy_score, sell_score)
+        其中 signals 列表中每项为 [指标名, 具体值, 信号方向]
+    """
+    signals = []
+    buy_score = 0
+    sell_score = 0
+
+    # 获取最新数据
+    latest = df.iloc[-1]
+    prev = df.iloc[-2] if len(df) > 1 else latest
+    price = close.iloc[-1]
+
+    # 1. MACD 信号
+    macd = latest.get("MACD")
+    signal_line = latest.get("DEA")
+    prev_macd = prev.get("MACD")
+    prev_signal = prev.get("DEA")
+    if all(v is not None for v in [macd, signal_line, prev_macd, prev_signal]):
+        if prev_macd < prev_signal and macd > signal_line:
+            signals.append(["MACD", "金叉↑", "买入信号"])
+            buy_score += 2
+        elif prev_macd > prev_signal and macd < signal_line:
+            signals.append(["MACD", "死叉↓", "卖出信号"])
+            sell_score += 2
+        elif macd > 0 and macd > signal_line:
+            signals.append(["MACD", "多头排列", "偏多"])
+            buy_score += 1
+        elif macd < 0 and macd < signal_line:
+            signals.append(["MACD", "空头排列", "偏空"])
+            sell_score += 1
+
+    # 2. KDJ 信号
+    k = latest.get("KDJ.K")
+    d = latest.get("KDJ.D")
+    j = latest.get("KDJ.J")
+    prev_k = prev.get("KDJ.K")
+    prev_d = prev.get("KDJ.D")
+    if all(v is not None for v in [k, d, j]):
+        if prev_k and prev_d and prev_k < prev_d and k > d:
+            signals.append(["KDJ", f"金叉 K={k:.1f} D={d:.1f} J={j:.1f}", "买入"])
+            buy_score += 2
+        elif prev_k and prev_d and prev_k > prev_d and k < d:
+            signals.append(["KDJ", f"死叉 K={k:.1f} D={d:.1f} J={j:.1f}", "卖出"])
+            sell_score += 2
+        elif j < 20:
+            signals.append(["KDJ", f"超卖区 J={j:.1f}", "关注反弹"])
+            buy_score += 1
+        elif j > 80:
+            signals.append(["KDJ", f"超买区 J={j:.1f}", "注意回调"])
+            sell_score += 1
+
+    # 3. RSI 信号
+    rsi14 = latest.get("RSI")
+    if rsi14 is not None:
+        if rsi14 < 30:
+            signals.append(["RSI", f"{rsi14:.1f} 超卖", "反弹机会"])
+            buy_score += 2
+        elif rsi14 > 70:
+            signals.append(["RSI", f"{rsi14:.1f} 超买", "回调风险"])
+            sell_score += 2
+        elif 40 <= rsi14 <= 60:
+            signals.append(["RSI", f"{rsi14:.1f} 中性区间", "中性"])
+
+    # 4. 布林带信号
+    boll_upper = latest.get("BOLL.U")
+    boll_mid = latest.get("BOLL.M")
+    boll_lower = latest.get("BOLL.L")
+    if all(v is not None for v in [boll_upper, boll_mid, boll_lower]):
+        if price <= boll_lower:
+            signals.append(["布林带", f"触及下轨 {boll_lower:.2f}", "超卖"])
+            buy_score += 2
+        elif price >= boll_upper:
+            signals.append(["布林带", f"触及上轨 {boll_upper:.2f}", "超买"])
+            sell_score += 2
+        elif price > boll_mid:
+            signals.append(["布林带", "在中轨上方运行", "偏多"])
+            buy_score += 1
+        else:
+            signals.append(["布林带", "在中轨下方运行", "偏空"])
+            sell_score += 1
+
+    # 5. 均线系统
+    ma5 = latest.get("MA5")
+    ma20 = latest.get("MA20")
+    ma60 = latest.get("MA60")
+    if ma5 and ma20:
+        if ma5 > ma20:
+            signals.append(["均线", f"MA5({ma5:.2f})>MA20({ma20:.2f})", "多头"])
+            buy_score += 1
+        else:
+            signals.append(["均线", f"MA5({ma5:.2f})<MA20({ma20:.2f})", "空头"])
+            sell_score += 1
+        if ma60 and price > ma60:
+            signals.append(["趋势", f"价格在MA60({ma60:.2f})上方", "中期多头"])
+            buy_score += 1
+        elif ma60 and price < ma60:
+            signals.append(["趋势", f"价格在MA60({ma60:.2f})下方", "中期空头"])
+            sell_score += 1
+
+    # 6. 量能分析
+    if volume is not None and len(volume) >= 5:
+        vol_ma5 = volume.iloc[-5:].mean()
+        current_vol = volume.iloc[-1]
+        vol_ratio = current_vol / vol_ma5 if vol_ma5 > 0 else 1
+        if vol_ratio > 2:
+            signals.append(["量能", f"放量 {vol_ratio:.1f}倍", "关注突破"])
+        elif vol_ratio < 0.5:
+            signals.append(["量能", f"缩量 {vol_ratio:.1f}倍", "观望"])
+
+    return signals, buy_score, sell_score
+
 @mcp.tool(
     title="A股交易信号",
     description="根据技术指标生成股票交易信号，综合MACD、KDJ、RSI、布林带等指标判断买卖时机。",
@@ -157,111 +279,9 @@ def trading_signals(
 
         add_technical_indicators(df, close, low, high, volume)
 
-        # 获取最新数据
-        latest = df.iloc[-1]
-        prev = df.iloc[-2] if len(df) > 1 else latest
-
-        signals = []
-        buy_score = 0
-        sell_score = 0
-
-        # 1. MACD 信号
-        macd = latest.get("MACD")
-        signal_line = latest.get("DEA")  # DEA即信号线
-        prev_macd = prev.get("MACD")
-        prev_signal = prev.get("DEA")
-        if all(v is not None for v in [macd, signal_line, prev_macd, prev_signal]):
-            if prev_macd < prev_signal and macd > signal_line:
-                signals.append(["MACD", "金叉↑", "买入信号"])
-                buy_score += 2
-            elif prev_macd > prev_signal and macd < signal_line:
-                signals.append(["MACD", "死叉↓", "卖出信号"])
-                sell_score += 2
-            elif macd > 0 and macd > signal_line:
-                signals.append(["MACD", "多头排列", "偏多"])
-                buy_score += 1
-            elif macd < 0 and macd < signal_line:
-                signals.append(["MACD", "空头排列", "偏空"])
-                sell_score += 1
-
-        # 2. KDJ 信号
-        k = latest.get("KDJ.K")
-        d = latest.get("KDJ.D")
-        j = latest.get("KDJ.J")
-        prev_k = prev.get("KDJ.K")
-        prev_d = prev.get("KDJ.D")
-        if all(v is not None for v in [k, d, j]):
-            if prev_k and prev_d and prev_k < prev_d and k > d:
-                signals.append(["KDJ", f"金叉 K={k:.1f} D={d:.1f} J={j:.1f}", "买入"])
-                buy_score += 2
-            elif prev_k and prev_d and prev_k > prev_d and k < d:
-                signals.append(["KDJ", f"死叉 K={k:.1f} D={d:.1f} J={j:.1f}", "卖出"])
-                sell_score += 2
-            elif j < 20:
-                signals.append(["KDJ", f"超卖区 J={j:.1f}", "关注反弹"])
-                buy_score += 1
-            elif j > 80:
-                signals.append(["KDJ", f"超买区 J={j:.1f}", "注意回调"])
-                sell_score += 1
-
-        # 3. RSI 信号
-        rsi14 = latest.get("RSI")  # 默认14周期RSI
-        if rsi14 is not None:
-            if rsi14 < 30:
-                signals.append(["RSI", f"{rsi14:.1f} 超卖", "反弹机会"])
-                buy_score += 2
-            elif rsi14 > 70:
-                signals.append(["RSI", f"{rsi14:.1f} 超买", "回调风险"])
-                sell_score += 2
-            elif 40 <= rsi14 <= 60:
-                signals.append(["RSI", f"{rsi14:.1f} 中性区间", "中性"])
-
-        # 4. 布林带信号
-        boll_upper = latest.get("BOLL.U")
-        boll_mid = latest.get("BOLL.M")
-        boll_lower = latest.get("BOLL.L")
+        # 使用共用函数生成信号
         price = close.iloc[-1]
-        if all(v is not None for v in [boll_upper, boll_mid, boll_lower]):
-            if price <= boll_lower:
-                signals.append(["布林带", f"触及下轨 {boll_lower:.2f}", "超卖"])
-                buy_score += 2
-            elif price >= boll_upper:
-                signals.append(["布林带", f"触及上轨 {boll_upper:.2f}", "超买"])
-                sell_score += 2
-            elif price > boll_mid:
-                signals.append(["布林带", "在中轨上方运行", "偏多"])
-                buy_score += 1
-            else:
-                signals.append(["布林带", "在中轨下方运行", "偏空"])
-                sell_score += 1
-
-        # 5. 均线系统
-        ma5 = latest.get("MA5")
-        ma20 = latest.get("MA20")
-        ma60 = latest.get("MA60")
-        if ma5 and ma20:
-            if ma5 > ma20:
-                signals.append(["均线", f"MA5({ma5:.2f})>MA20({ma20:.2f})", "多头"])
-                buy_score += 1
-            else:
-                signals.append(["均线", f"MA5({ma5:.2f})<MA20({ma20:.2f})", "空头"])
-                sell_score += 1
-            if ma60 and price > ma60:
-                signals.append(["趋势", f"价格在MA60({ma60:.2f})上方", "中期多头"])
-                buy_score += 1
-            elif ma60 and price < ma60:
-                signals.append(["趋势", f"价格在MA60({ma60:.2f})下方", "中期空头"])
-                sell_score += 1
-
-        # 6. 量能分析
-        if volume is not None and len(volume) >= 5:
-            vol_ma5 = volume.iloc[-5:].mean()
-            current_vol = volume.iloc[-1]
-            vol_ratio = current_vol / vol_ma5 if vol_ma5 > 0 else 1
-            if vol_ratio > 2:
-                signals.append(["量能", f"放量 {vol_ratio:.1f}倍", "关注突破"])
-            elif vol_ratio < 0.5:
-                signals.append(["量能", f"缩量 {vol_ratio:.1f}倍", "观望"])
+        signals, buy_score, sell_score = _generate_trading_signals(df, close, volume)
 
         # 综合建议
         total_score = buy_score - sell_score

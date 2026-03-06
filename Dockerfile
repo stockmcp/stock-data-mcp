@@ -14,16 +14,11 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# 先复制依赖文件，利用 Docker 缓存
+# 复制依赖和项目文件
 COPY pyproject.toml uv.lock README.md ./
-
-# 只安装依赖，不安装项目本身（因为源码还没复制）
-RUN uv sync --frozen --no-dev --no-cache --no-install-project
-
-# 复制完整源码
 COPY . .
 
-# 安装项目（此时源码已存在）
+# 同时安装依赖和项目
 RUN uv sync --frozen --no-dev --no-cache
 
 # 安装必要工具
