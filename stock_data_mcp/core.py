@@ -24,6 +24,9 @@ _LOGGER = logging.getLogger(__name__)
 _LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 _LOGGER.setLevel(getattr(logging, _LOG_LEVEL, logging.INFO))
 
+# 全局 HTTP Session（连接池复用 TCP 连接）
+_http_session = requests.Session()
+
 # MCP 实例
 mcp = FastMCP(name="stock-data-mcp", version=__version__)
 
@@ -133,7 +136,7 @@ def get_akshare_source(func) -> str:
 
 
 # 公共 Field 定义
-field_symbol = Field(description="股票代码")
+field_symbol = Field(description="股票代码（纯数字或字母组合，如600519、AAPL、HK00700）")
 field_market = Field("sh", description="股票市场，仅支持: sh(上证), sz(深证), hk(港股), us(美股), 不支持加密货币")
 
 # API 基础 URL
@@ -160,7 +163,7 @@ def _http_request_with_retry(method, url, params=None, json=None, headers=None, 
     last_error = None
     for i in range(max_retries):
         try:
-            res = requests.request(method, url, params=params, json=json, headers=headers, timeout=timeout)
+            res = _http_session.request(method, url, params=params, json=json, headers=headers, timeout=timeout)
             if res.status_code == 200:
                 return res
         except Exception as e:

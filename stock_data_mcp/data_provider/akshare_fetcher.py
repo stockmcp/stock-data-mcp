@@ -4,7 +4,6 @@ Akshare 数据获取器 (优先级 2)
 """
 
 import logging
-import time
 from typing import Optional, Dict, List
 
 import pandas as pd
@@ -33,9 +32,6 @@ class AkshareFetcher(BaseFetcher):
 
     def __init__(self):
         super().__init__()
-        self._realtime_cache: Dict[str, UnifiedRealtimeQuote] = {}
-        self._realtime_cache_time: float = 0
-        self._cache_ttl: float = 1200.0  # 20分钟缓存
 
     @retry(
         stop=stop_after_attempt(3),
@@ -168,14 +164,6 @@ class AkshareFetcher(BaseFetcher):
             stock_code: 股票代码
             source: 数据源，可选 "em"(东财), "sina"(新浪), "tencent"(腾讯)
         """
-        # 检查缓存
-        cache_key = f"{stock_code}_{source}"
-        if (
-            cache_key in self._realtime_cache
-            and time.time() - self._realtime_cache_time < self._cache_ttl
-        ):
-            return self._realtime_cache[cache_key]
-
         try:
             self.random_sleep(0.5, 1.5)
 
@@ -233,10 +221,6 @@ class AkshareFetcher(BaseFetcher):
                 low_52w=safe_float(row.get('52周最低')),
             )
 
-            # 更新缓存
-            self._realtime_cache[f"{stock_code}_em"] = quote
-            self._realtime_cache_time = time.time()
-
             return quote
 
         except Exception as e:
@@ -275,9 +259,6 @@ class AkshareFetcher(BaseFetcher):
                 low=safe_float(row.get('最低')),
                 pre_close=safe_float(row.get('昨收')),
             )
-
-            self._realtime_cache[f"{stock_code}_sina"] = quote
-            self._realtime_cache_time = time.time()
 
             return quote
 
@@ -319,9 +300,6 @@ class AkshareFetcher(BaseFetcher):
                 low=safe_float(row.get('最低')),
                 pre_close=safe_float(row.get('昨收')),
             )
-
-            self._realtime_cache[f"{stock_code}_em"] = quote
-            self._realtime_cache_time = time.time()
 
             return quote
 
@@ -378,24 +356,10 @@ class AkshareFetcher(BaseFetcher):
         """
         result: Dict[str, UnifiedRealtimeQuote] = {}
 
-        # 先检查缓存
-        if time.time() - self._realtime_cache_time < self._cache_ttl:
-            uncached = []
-            for code in stock_codes:
-                cache_key = f"{code}_em"
-                if cache_key in self._realtime_cache:
-                    result[code] = self._realtime_cache[cache_key]
-                else:
-                    uncached.append(code)
-            if not uncached:
-                return result
-        else:
-            uncached = list(stock_codes)
-
         # 按类型分组
-        etf_codes = [c for c in uncached if is_etf_code(c)]
-        hk_codes = [c for c in uncached if is_hk_code(c)]
-        a_codes = [c for c in uncached if not is_etf_code(c) and not is_hk_code(c)]
+        etf_codes = [c for c in stock_codes if is_etf_code(c)]
+        hk_codes = [c for c in stock_codes if is_hk_code(c)]
+        a_codes = [c for c in stock_codes if not is_etf_code(c) and not is_hk_code(c)]
 
         # 批量获取 ETF
         if etf_codes:
@@ -403,7 +367,6 @@ class AkshareFetcher(BaseFetcher):
                 self.random_sleep(0.5, 1.5)
                 df = ak.fund_etf_spot_em()
                 if df is not None and not df.empty:
-                    now = time.time()
                     for code in etf_codes:
                         row = df[df['代码'] == code]
                         if not row.empty:
@@ -422,8 +385,6 @@ class AkshareFetcher(BaseFetcher):
                                 pre_close=safe_float(row.get('昨收')),
                             )
                             result[code] = quote
-                            self._realtime_cache[f"{code}_em"] = quote
-                    self._realtime_cache_time = now
             except Exception as e:
                 _LOGGER.warning(f"[{self.name}] 批量获取 ETF 实时行情失败: {e}")
 
@@ -433,7 +394,6 @@ class AkshareFetcher(BaseFetcher):
                 self.random_sleep(0.5, 1.5)
                 df = ak.stock_zh_a_spot_em()
                 if df is not None and not df.empty:
-                    now = time.time()
                     for code in a_codes:
                         row = df[df['代码'] == code]
                         if not row.empty:
@@ -460,8 +420,6 @@ class AkshareFetcher(BaseFetcher):
                                 circ_mv=safe_float(row.get('流通市值')),
                             )
                             result[code] = quote
-                            self._realtime_cache[f"{code}_em"] = quote
-                    self._realtime_cache_time = now
             except Exception as e:
                 _LOGGER.warning(f"[{self.name}] 批量获取 A股 实时行情失败: {e}")
 
@@ -471,7 +429,6 @@ class AkshareFetcher(BaseFetcher):
                 self.random_sleep(0.5, 1.5)
                 df = ak.stock_hk_spot_em()
                 if df is not None and not df.empty:
-                    now = time.time()
                     for code in hk_codes:
                         clean_code = code.lower().replace('hk', '').lstrip('0')
                         row = df[df['代码'] == clean_code]
@@ -491,8 +448,6 @@ class AkshareFetcher(BaseFetcher):
                                 pre_close=safe_float(row.get('昨收')),
                             )
                             result[code] = quote
-                            self._realtime_cache[f"{code}_em"] = quote
-                    self._realtime_cache_time = now
             except Exception as e:
                 _LOGGER.warning(f"[{self.name}] 批量获取港股实时行情失败: {e}")
 

@@ -122,6 +122,9 @@ class BaseFetcher(ABC):
         Returns:
             标准化的 DataFrame，列名为 STANDARD_COLUMNS
         """
+        # 防御性转换：确保 stock_code 是字符串
+        stock_code = str(stock_code).strip()
+
         if not end_date:
             end_date = datetime.now().strftime("%Y%m%d")
         if not start_date:
@@ -399,6 +402,9 @@ class DataFetcherManager:
         Returns:
             标准化的 DataFrame
         """
+        # 防御性转换：确保 stock_code 是字符串
+        stock_code = str(stock_code).strip()
+
         circuit_breaker = get_daily_circuit_breaker()
         last_error = None
 

@@ -37,7 +37,7 @@ class NetworkError(DataFetchError):
     pass
 
 
-class TimeoutError(DataFetchError):
+class RequestTimeoutError(DataFetchError):
     """请求超时错误（可重试）"""
     pass
 
@@ -134,7 +134,7 @@ def is_retryable(error: Exception) -> bool:
     """
     retryable_types = (
         NetworkError,
-        TimeoutError,
+        RequestTimeoutError,
         RateLimitError,
         DataSourceUnavailableError,
         ConnectionError,
@@ -208,7 +208,7 @@ def classify_exception(error: Exception, source: str = None, code: str = None) -
     if isinstance(error, (ConnectionError, requests.exceptions.ConnectionError)):
         return NetworkError(f"网络连接失败: {error_msg}", code=code, source=source)
 
-    if isinstance(error, (TimeoutError, requests.exceptions.Timeout)):
+    if isinstance(error, (RequestTimeoutError, requests.exceptions.Timeout)):
         return NetworkError(f"请求超时: {error_msg}", code=code, source=source)
 
     if isinstance(error, requests.exceptions.RequestException):

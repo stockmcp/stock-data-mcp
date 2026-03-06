@@ -15,6 +15,8 @@ stock_data_mcp/_version.py
 # Local / AI tools
 .claude/
 CLAUDE.md
+PLAN.md
+ARCHITECTURE_ANALYSIS.md
 
 # Environment variables (contains secrets)
 .env
@@ -33,3 +35,4 @@ Thumbs.db
 tests/
 pytest.ini
 .pytest_cache/
+

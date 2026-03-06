@@ -49,6 +49,7 @@ class AlphaVantageFetcher(BaseFetcher):
         self._available = bool(self._api_key)
         self._last_request_time = 0
         self._min_request_interval = 12.5  # 免费版每分钟 5 次请求限制
+        self._session = requests.Session()
 
         if not self._available:
             _LOGGER.info("Alpha Vantage API key not configured, fetcher disabled")
@@ -93,7 +94,7 @@ class AlphaVantageFetcher(BaseFetcher):
             request_params.update(params)
 
         try:
-            response = requests.get(
+            response = self._session.get(
                 ALPHA_VANTAGE_BASE_URL,
                 params=request_params,
                 headers={"User-Agent": self.get_random_user_agent()},

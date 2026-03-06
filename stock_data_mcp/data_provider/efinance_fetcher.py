@@ -4,7 +4,6 @@ Efinance 数据获取器 (优先级 1)
 """
 
 import logging
-import time
 from typing import Optional, Dict, List
 
 import pandas as pd
@@ -30,9 +29,6 @@ class EfinanceFetcher(BaseFetcher):
 
     def __init__(self):
         super().__init__()
-        self._realtime_cache: Dict[str, UnifiedRealtimeQuote] = {}
-        self._realtime_cache_time: float = 0
-        self._cache_ttl: float = 600.0  # 10分钟缓存
 
         # 延迟导入
         try:
@@ -169,26 +165,24 @@ class EfinanceFetcher(BaseFetcher):
             pre_close=safe_float(row.get('昨收')),
         )
 
-    def _refresh_realtime_cache(self) -> bool:
-        """刷新实时行情缓存，返回是否成功"""
+    def _fetch_all_realtime_quotes(self) -> Dict[str, UnifiedRealtimeQuote]:
+        """获取全市场实时行情"""
         try:
             self.random_sleep(0.5, 1.5)
             df = self._ef.stock.get_realtime_quotes()
             if df is None or df.empty:
-                return False
+                return {}
 
-            self._realtime_cache.clear()
-            self._realtime_cache_time = time.time()
-
+            result: Dict[str, UnifiedRealtimeQuote] = {}
             for _, row in df.iterrows():
                 quote = self._create_quote_from_row(row)
                 if quote:
-                    self._realtime_cache[quote.code] = quote
+                    result[quote.code] = quote
 
-            return True
+            return result
         except Exception as e:
-            _LOGGER.warning(f"[{self.name}] 刷新实时行情缓存失败: {e}")
-            return False
+            _LOGGER.warning(f"[{self.name}] 获取全市场实时行情失败: {e}")
+            return {}
 
     def get_realtime_quote(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
         """获取实时行情（仅支持A股个股，不支持ETF和港股）"""
@@ -200,17 +194,8 @@ class EfinanceFetcher(BaseFetcher):
             _LOGGER.debug(f"[{self.name}] ETF {stock_code} 不支持实时行情，跳过")
             return None
 
-        # 检查缓存
-        if (
-            stock_code in self._realtime_cache
-            and time.time() - self._realtime_cache_time < self._cache_ttl
-        ):
-            return self._realtime_cache[stock_code]
-
-        # 刷新缓存
-        if self._refresh_realtime_cache():
-            return self._realtime_cache.get(stock_code)
-        return None
+        quotes = self._fetch_all_realtime_quotes()
+        return quotes.get(stock_code)
 
     def get_batch_realtime_quotes(
         self,
@@ -226,19 +211,8 @@ class EfinanceFetcher(BaseFetcher):
             _LOGGER.debug(f"[{self.name}] 批量查询中无A股个股，跳过")
             return {}
 
-        # 先尝试从缓存获取
-        if time.time() - self._realtime_cache_time < self._cache_ttl:
-            result = {}
-            for code in a_stock_codes:
-                if code in self._realtime_cache:
-                    result[code] = self._realtime_cache[code]
-            if len(result) == len(a_stock_codes):
-                return result
-
-        # 刷新缓存
-        if self._refresh_realtime_cache():
-            return {code: self._realtime_cache[code] for code in a_stock_codes if code in self._realtime_cache}
-        return {}
+        quotes = self._fetch_all_realtime_quotes()
+        return {code: quotes[code] for code in a_stock_codes if code in quotes}
 
     def get_base_info(self, stock_code: str) -> Optional[Dict]:
         """获取股票基本信息"""

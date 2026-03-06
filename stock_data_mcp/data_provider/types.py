@@ -462,6 +462,8 @@ def to_english_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 def is_etf_code(stock_code: str) -> bool:
     """判断是否为 ETF 代码"""
+    # 防御性转换：如果是整型，转换为字符串并用前导零补齐
+    stock_code = str(stock_code).strip().zfill(6)
     code = stock_code.lstrip('0')
     if len(code) == 6:
         prefix = code[:2]
@@ -473,6 +475,8 @@ def is_etf_code(stock_code: str) -> bool:
 
 def is_hk_code(stock_code: str) -> bool:
     """判断是否为港股代码"""
+    # 防御性转换：如果是整型，转换为字符串并用前导零补齐
+    stock_code = str(stock_code).strip()
     code = stock_code.lower()
     if code.startswith('hk'):
         return True
@@ -484,6 +488,8 @@ def is_hk_code(stock_code: str) -> bool:
 
 def is_us_code(stock_code: str) -> bool:
     """判断是否为美股代码"""
+    # 防御性转换：确保是字符串
+    stock_code = str(stock_code).strip()
     # 美股代码通常是1-5个大写字母，可能带有后缀如 .O .N
     code = stock_code.upper().split('.')[0]
     return len(code) <= 5 and code.isalpha()
@@ -491,6 +497,8 @@ def is_us_code(stock_code: str) -> bool:
 
 def is_a_stock_code(stock_code: str) -> bool:
     """判断是否为A股代码（含ETF）"""
+    # 防御性转换：如果是整型，转换为字符串并用前导零补齐
+    stock_code = str(stock_code).strip().zfill(6)
     code = stock_code.lstrip('0')
     if len(code) != 6 or not code.isdigit():
         return False
@@ -514,6 +522,8 @@ class StockType(Enum):
 
 def detect_stock_type(stock_code: str) -> StockType:
     """自动检测股票类型"""
+    # 防御性转换：确保是字符串
+    stock_code = str(stock_code).strip()
     if is_hk_code(stock_code):
         return StockType.HK
     if is_us_code(stock_code):
@@ -536,6 +546,8 @@ def validate_stock_type(stock_code: str, user_market: str) -> tuple[StockType, s
     Returns:
         (StockType, market_str): 最终确定的股票类型和市场字符串
     """
+    # 防御性转换：确保是字符串
+    stock_code = str(stock_code).strip()
     detected_type = detect_stock_type(stock_code)
 
     # 将用户市场映射到 StockType
